@@ -66,13 +66,13 @@ class Config:
 
     rss_sources: List[RSSSource] = field(default_factory=lambda: [
         RSSSource(name="BBC News", url="http://feeds.bbci.co.uk/news/rss.xml"),
-        RSSSource(name="Reuters", url="https://www.rss-bridge.org/bridge01/?action=display&bridge=FilterBridge&url=https%3A%2F%2Fwww.reuters.com&format=Atom"),
+        RSSSource(name="Reuters", url="https://feeds.reuters.com/reuters/topNews"),
         RSSSource(name="The Guardian", url="https://www.theguardian.com/world/rss"),
         RSSSource(name="Al Jazeera", url="https://www.aljazeera.com/xml/rss/all.xml"),
         RSSSource(name="Fox News", url="https://moxie.foxnews.com/google-publisher/world.xml"),
         RSSSource(name="The Economist", url="https://www.economist.com/the-world-this-week/rss.xml"),
         RSSSource(name="SCMP (Азия)", url="https://www.scmp.com/rss/91/feed"),
-        RSSSource(name="Deutsche Welle", url="https://rss.dw.com/rdf/rss-en-all"),
+        RSSSource(name="Deutsche Welle", url="https://rss.dw.com/atom/rss-en-all"),
         RSSSource(name="France 24", url="https://www.france24.com/en/rss"),
         RSSSource(name="Foreign Policy", url="https://foreignpolicy.com/feed/"),
         RSSSource(name="Project Syndicate", url="https://www.project-syndicate.org/rss")
