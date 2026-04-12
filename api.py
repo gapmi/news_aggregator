@@ -30,7 +30,7 @@ security = HTTPBearer()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080"],
+    allow_origins=["*"], # Разрешаем запросы ото всех для теста
     allow_methods=["*"],
     allow_headers=["*"],
 )
