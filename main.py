@@ -6,7 +6,8 @@ from config import Config
 from scrapers import RSSScraper, HTMLScraper
 from scrapers.base import Article
 from processors import deduplicate
-from storage import JSONStorage
+# from storage import JSONStorage
+from storage.pg_storage import PGStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,7 +35,8 @@ def main() -> None:
     all_articles = deduplicate(all_articles)
 
     # Store
-    storage = JSONStorage(cfg.output_file)
+    # storage = JSONStorage(cfg.output_file)
+    storage = PGStorage()
     storage.save(all_articles)
 
     logger.info("Done! Total unique articles: %d", len(all_articles))
