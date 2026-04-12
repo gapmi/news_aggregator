@@ -41,7 +41,7 @@ ADMIN_PASS = os.getenv("ADMIN_PASS", "secret123")
 # --- DB ---
 def get_conn():
     return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
+        host=os.getenv("DB_HOST", "db"),
         port=os.getenv("DB_PORT", 5433),
         dbname=os.getenv("DB_NAME", "news"),
         user=os.getenv("DB_USER", "myuser"),
