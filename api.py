@@ -8,7 +8,7 @@ import os
 import secrets
 import threading
 import logging
-import sys
+import time
 from datetime import datetime
 
 # --- Логгер для хранения логов запуска ---
@@ -65,7 +65,7 @@ def init_sources_table():
         """)
     conn.commit()
     conn.close()
-
+time.sleep(5)
 init_sources_table()
 
 # --- Auth ---
