@@ -65,10 +65,19 @@ def init_sources_table():
         """)
     conn.commit()
     conn.close()
-if __name__=="__main__":
-    print("waiting for DB...")
-time.sleep(5)
-init_sources_table()
+    if __name__ == "main":
+        print("Waiting for database connection...")
+        retries = 5
+        while retries > 0:
+            try:
+                init_sources_table()
+                print("Database initialized successfully!")
+                break
+            except Exception as e:
+                print(f"Database not ready yet, retrying in 5s... ({retries} left)")
+                time.sleep(5)
+                retries -= 1
+    init_sources_table()
 
 # --- Auth ---
 class LoginRequest(BaseModel):
