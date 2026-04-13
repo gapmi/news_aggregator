@@ -65,6 +65,8 @@ def init_sources_table():
         """)
     conn.commit()
     conn.close()
+if __name__=="__main__":
+    print("waiting for DB...")
 time.sleep(5)
 init_sources_table()
 
