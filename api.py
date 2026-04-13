@@ -40,12 +40,18 @@ ADMIN_PASS = os.getenv("ADMIN_PASS", "secret123")
 
 # --- DB ---
 def get_conn():
+    # Пытаемся взять DATABASE_URL (самый надежный способ для Docker)
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        return psycopg2.connect(db_url)
+    
+    # Если DATABASE_URL нет, собираем по частям
     return psycopg2.connect(
         host=os.getenv("DB_HOST", "db"),
-        port=os.getenv("DB_PORT", 5433),
-        dbname=os.getenv("DB_NAME", "news"),
-        user=os.getenv("DB_USER", "myuser"),
-        password=os.getenv("DB_PASSWORD", "mypassword"),
+        port=os.getenv("DB_PORT", "5432"),         # В Docker порт базы 5432
+        dbname=os.getenv("DB_NAME", "news_db"),    # Твоя база в конфиге называется news_db
+        user=os.getenv("DB_USER", "postgres"),     # Твой пользователь в конфиге — postgres
+        password=os.getenv("DB_PASSWORD", "_qg9_P__1WWpeffd") 
     )
 
 def init_sources_table():
