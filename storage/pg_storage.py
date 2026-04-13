@@ -4,10 +4,14 @@ from scrapers.base import Article
 
 class PGStorage:
     def init(self):
-            db_url = os.getenv("DATABASE_URL")
+        self.conn = None
+        db_url = os.getenv("DATABASE_URL")
+        try:
             if db_url:
+                print(f"Connecting to DB via URL...")
                 self.conn = psycopg2.connect(db_url)
             else:
+                print("Connecting to DB via components...")
                 self.conn = psycopg2.connect(
                     host=os.getenv("DB_HOST", "db"),
                     port=os.getenv("DB_PORT", "5432"),
@@ -16,7 +20,8 @@ class PGStorage:
                     password=os.getenv("DB_PASSWORD", "_qg9_P__1WWpeffd")
                 )
             self._create_table()
-
+        except Exception as e:
+            print(f"FAILED TO CONNECT TO DB: {e}")
     def _create_table(self):
         with self.conn.cursor() as cur:
             cur.execute("""
