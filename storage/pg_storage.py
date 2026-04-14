@@ -1,7 +1,6 @@
 import psycopg2
 import os
 import time
-
 from scrapers.base import Article
 
 class PGStorage:
@@ -9,14 +8,14 @@ class PGStorage:
         self.conn = None
         db_url = os.getenv("DATABASE_URL")
         
-        retries = 5 # Пытаемся подключиться 5 раз
-        while retries > 0:
+        # Цикл: пытаемся подключиться, пока не получится
+        while self.conn is None:
             try:
                 if db_url:
-                    print(f"Connecting to DB via URL... ({retries} retries left)")
+                    print("Connecting to DB via URL...")
                     self.conn = psycopg2.connect(db_url)
                 else:
-                    print(f"Connecting to DB via components... ({retries} retries left)")
+                    print("Connecting to DB via components...")
                     self.conn = psycopg2.connect(
                         host=os.getenv("DB_HOST", "db"),
                         port=os.getenv("DB_PORT", "5432"),
@@ -26,14 +25,10 @@ class PGStorage:
                     )
                 self._create_table()
                 print("Database initialized successfully!")
-                break # Если подключились — выходим из цикла
             except Exception as e:
-                print(f"FAILED TO CONNECT TO DB: {e}. Retrying in 5s...")
+                print(f"Database not ready yet ({e}). Retrying in 5 seconds...")
                 time.sleep(5)
-                retries -= 1
-        
-        if not self.conn:
-            print("CRITICAL: Could not connect to database after retries.")
+
     def _create_table(self):
         with self.conn.cursor() as cur:
             cur.execute("""
@@ -48,6 +43,10 @@ class PGStorage:
         self.conn.commit()
 
     def save(self, articles: list[Article]):
+        if not self.conn:
+            print("No database connection, cannot save articles.")
+            return
+            
         with self.conn.cursor() as cur:
             for a in articles:
                 cur.execute("""
