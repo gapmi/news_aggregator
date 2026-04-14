@@ -4,7 +4,7 @@ import time
 from scrapers.base import Article
 
 class PGStorage:
-    def init(self):
+    def __init__(self):
         self.conn = None
         # Ждем, пока база проснется
         while self.conn is None:
