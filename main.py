@@ -20,28 +20,31 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     cfg = Config()
-    all_articles: list[Article] = []
+    while True:
+        all_articles: list[Article] = []
 
-    # RSS sources
-    for src in cfg.rss_sources:
-        scraper = RSSScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
-        all_articles.extend(scraper.fetch())
+        # RSS sources
+        for src in cfg.rss_sources:
+            scraper = RSSScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
+            all_articles.extend(scraper.fetch())
 
-    # HTML sources
-    for src in cfg.html_sources:
-        scraper = HTMLScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
-        all_articles.extend(scraper.fetch())
+        # HTML sources
+        for src in cfg.html_sources:
+            scraper = HTMLScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
+            all_articles.extend(scraper.fetch())
 
-    # Process
-    all_articles = deduplicate(all_articles)
+        # Process
+        all_articles = deduplicate(all_articles)
 
-    # Store
-    # storage = JSONStorage(cfg.output_file)
-    storage = PGStorage()
-    storage.save(all_articles)
-
-    logger.info("Done! Total unique articles: %d", len(all_articles))
-    time.sleep(3600)
+        # Store
+        # storage = JSONStorage(cfg.output_file)
+        storage = PGStorage()
+        storage.save(all_articles)
+            
+        logger.info("Done! Total unique articles: %d", len(all_articles))
+            
+        # Теперь sleep будет срабатывать после каждой итерации
+        time.sleep(3600)
 
 if __name__ == "__main__":
     main()
