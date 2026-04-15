@@ -1,6 +1,7 @@
 """News Aggregator — entry point."""
 import logging
 import sys
+import time
 
 from config import Config
 from scrapers import RSSScraper, HTMLScraper
@@ -40,7 +41,7 @@ def main() -> None:
     storage.save(all_articles)
 
     logger.info("Done! Total unique articles: %d", len(all_articles))
-
+    time.sleep(60)
 
 if __name__ == "__main__":
     main()
