@@ -41,7 +41,7 @@ def main() -> None:
     storage.save(all_articles)
 
     logger.info("Done! Total unique articles: %d", len(all_articles))
-    time.sleep(60)
+    time.sleep(3600)
 
 if __name__ == "__main__":
     main()
