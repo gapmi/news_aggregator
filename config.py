@@ -71,7 +71,7 @@ class Config:
         RSSSource(name="Al Jazeera", url="https://www.aljazeera.com/xml/rss/all.xml"),
         RSSSource(name="Fox News", url="https://moxie.foxnews.com/google-publisher/world.xml"),
         RSSSource(name="The Economist", url="https://www.economist.com/the-world-this-week/rss.xml"),
-        RSSSource(name="SCMP (Азия)", url="https://www.scmp.com/rss/91/feed"),
+        RSSSource(name="SCMP (Asia)", url="https://www.scmp.com/rss/91/feed"),
         RSSSource(name="Deutsche Welle", url="https://rss.dw.com/atom/rss-en-all"),
         RSSSource(name="France 24", url="https://www.france24.com/en/rss"),
         RSSSource(name="Foreign Policy", url="https://foreignpolicy.com/feed/"),
