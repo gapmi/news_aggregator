@@ -1,21 +1,29 @@
-import psycopg2
 import os
 import time
+
+import psycopg2
+from psycopg2.extras import execute_batch
+from pgvector.psycopg2 import register_vector
+
 from scrapers.base import Article
+from processors.embeddings import EmbeddingService, ArticleText
+
 
 class PGStorage:
     def __init__(self):
         self.conn = None
-        # Ждем, пока база проснется
+        self.embedding_service = EmbeddingService()
+
         while self.conn is None:
             try:
                 self.conn = psycopg2.connect(
                     host=os.getenv("DB_HOST", "db"),
-                    port=os.getenv("DB_PORT", "5432"), # Внутри сети Docker всегда 5432
+                    port=os.getenv("DB_PORT", "5432"),
                     dbname=os.getenv("DB_NAME", "news_db"),
                     user=os.getenv("DB_USER", "postgres"),
                     password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd")
                 )
+                register_vector(self.conn)
                 self._create_table()
                 print("Database initialized successfully!")
             except Exception as e:
@@ -30,17 +38,57 @@ class PGStorage:
                     title TEXT,
                     url TEXT UNIQUE,
                     published TIMESTAMP,
-                    source TEXT
+                    source TEXT,
+                    embedding vector(384)
                 )
             """)
         self.conn.commit()
 
     def save(self, articles: list[Article]):
+        saved_rows = []
+
         with self.conn.cursor() as cur:
             for a in articles:
                 cur.execute("""
                     INSERT INTO articles (title, url, published, source)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (url) DO NOTHING
+                    ON CONFLICT (url) DO UPDATE
+                    SET title = EXCLUDED.title,
+                        published = EXCLUDED.published,
+                        source = EXCLUDED.source
+                    RETURNING id, title
                 """, (a.title, a.url, a.published, a.source))
+
+                row = cur.fetchone()
+                saved_rows.append({
+                    "id": row[0],
+                    "title": row[1],
+                })
+
+        self.conn.commit()
+
+        payload = [
+            ArticleText(id=row["id"], title=row["title"], content=None)
+            for row in saved_rows
+            if row["title"]
+        ]
+
+        if not payload:
+            return
+
+        vectors = self.embedding_service.encode_batch(payload, batch_size=32)
+
+        update_rows = [
+            (vector, article.id)
+            for article, vector in zip(payload, vectors)
+        ]
+
+        with self.conn.cursor() as cur:
+            execute_batch(
+                cur,
+                "UPDATE articles SET embedding = %s WHERE id = %s",
+                update_rows,
+                page_size=100
+            )
+
         self.conn.commit()
