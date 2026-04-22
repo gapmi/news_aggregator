@@ -4,5 +4,7 @@ feedparser>=6.0.0
 psycopg2-binary>=2.9.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
-sentence-transformers>=3.0.0
 pgvector>=0.3.0
+sentence-transformers==3.0.1
+torch==2.5.1+cpu ; platform_system == "Linux"
+--extra-index-url https://download.pytorch.org/whl/cpu
