@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-from sentence_transformers import SentenceTransformer
-
 
 @dataclass
 class ArticleText:
@@ -14,12 +12,21 @@ class ArticleText:
 
 
 class EmbeddingService:
+    _model = None
+
     def __init__(
         self,
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     ) -> None:
         self.model_name = model_name
-        self.model = SentenceTransformer(model_name)
+
+    @classmethod
+    def _get_model(cls, model_name: str):
+        if cls._model is None:
+            print(f"Loading embedding model: {model_name}")
+            from sentence_transformers import SentenceTransformer
+            cls._model = SentenceTransformer(model_name)
+        return cls._model
 
     def build_text(self, article: ArticleText) -> str:
         parts: list[str] = []
@@ -38,9 +45,11 @@ class EmbeddingService:
         return text
 
     def encode_text(self, text: str) -> list[float]:
-        vector = self.model.encode(
+        model = self._get_model(self.model_name)
+        vector = model.encode(
             text,
-            normalize_embeddings=True
+            normalize_embeddings=True,
+            convert_to_numpy=True
         )
         return vector.tolist()
 
@@ -51,14 +60,16 @@ class EmbeddingService:
     def encode_batch(
         self,
         articles: Sequence[ArticleText],
-        batch_size: int = 32
+        batch_size: int = 8
     ) -> list[list[float]]:
         texts = [self.build_text(article) for article in articles]
 
-        vectors = self.model.encode(
+        model = self._get_model(self.model_name)
+        vectors = model.encode(
             texts,
             batch_size=batch_size,
-            normalize_embeddings=True
+            normalize_embeddings=True,
+            convert_to_numpy=True
         )
 
         return [vector.tolist() for vector in vectors]

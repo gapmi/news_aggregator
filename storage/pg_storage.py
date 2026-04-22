@@ -6,13 +6,12 @@ from psycopg2.extras import execute_batch
 from pgvector.psycopg2 import register_vector
 
 from scrapers.base import Article
-from processors.embeddings import EmbeddingService, ArticleText
 
 
 class PGStorage:
     def __init__(self):
         self.conn = None
-        self.embedding_service = EmbeddingService()
+        self.embedding_service = None
 
         while self.conn is None:
             try:
@@ -44,6 +43,12 @@ class PGStorage:
             """)
         self.conn.commit()
 
+    def _get_embedding_service(self):
+        if self.embedding_service is None:
+            from processors.embeddings import EmbeddingService
+            self.embedding_service = EmbeddingService()
+        return self.embedding_service
+
     def save(self, articles: list[Article]):
         saved_rows = []
 
@@ -68,7 +73,7 @@ class PGStorage:
         self.conn.commit()
 
         payload = [
-            ArticleText(id=row["id"], title=row["title"], content=None)
+            {"id": row["id"], "title": row["title"]}
             for row in saved_rows
             if row["title"]
         ]
@@ -76,19 +81,34 @@ class PGStorage:
         if not payload:
             return
 
-        vectors = self.embedding_service.encode_batch(payload, batch_size=32)
+        try:
+            from processors.embeddings import ArticleText
 
-        update_rows = [
-            (vector, article.id)
-            for article, vector in zip(payload, vectors)
-        ]
+            embedding_service = self._get_embedding_service()
 
-        with self.conn.cursor() as cur:
-            execute_batch(
-                cur,
-                "UPDATE articles SET embedding = %s WHERE id = %s",
-                update_rows,
-                page_size=100
-            )
+            article_payload = [
+                ArticleText(id=row["id"], title=row["title"], content=None)
+                for row in payload
+            ]
 
-        self.conn.commit()
+            vectors = embedding_service.encode_batch(article_payload, batch_size=8)
+
+            update_rows = [
+                (vector, article.id)
+                for article, vector in zip(article_payload, vectors)
+            ]
+
+            with self.conn.cursor() as cur:
+                execute_batch(
+                    cur,
+                    "UPDATE articles SET embedding = %s WHERE id = %s",
+                    update_rows,
+                    page_size=50
+                )
+
+            self.conn.commit()
+            print(f"Embeddings updated: {len(update_rows)}")
+
+        except Exception as e:
+            print(f"Embedding generation skipped due to error: {e}")
+            self.conn.rollback()
