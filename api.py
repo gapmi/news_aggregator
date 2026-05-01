@@ -124,7 +124,32 @@ def get_articles(
         params.extend([limit, offset])
         cur.execute(query, params)
         articles = cur.fetchall()
+
+        article_ids = [a["id"] for a in articles]
+        scales_map: dict[int, list[dict]] = {}
+
+        if article_ids:
+            cur.execute(
+                """
+                SELECT article_id, scale_id, score, strength
+                FROM article_scales
+                WHERE article_id = ANY(%s)
+                """,
+                (article_ids,),
+            )
+            rows = cur.fetchall()
+            for r in rows:
+                scales_map.setdefault(r["article_id"], []).append({
+                    "id": r["scale_id"],
+                    "score": float(r["score"]),
+                    "strength": float(r["strength"]),
+                })
+
     conn.close()
+
+    for a in articles:
+        a["semantic_scales"] = scales_map.get(a["id"], [])
+
     return {"articles": articles, "total": len(articles)}
 
 @app.get("/sources")

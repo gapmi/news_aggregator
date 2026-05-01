@@ -70,7 +70,6 @@ class PGStorage:
                     "title": row[1],
                 })
 
-        self.conn.commit()
 
         payload = [
             {"id": row["id"], "title": row["title"]}
@@ -79,6 +78,7 @@ class PGStorage:
         ]
 
         if not payload:
+            self.conn.commit()
             return
 
         try:
@@ -106,9 +106,51 @@ class PGStorage:
                     page_size=50
                 )
 
+            id_with_vectors = [
+                (article.id, vector)
+                for article, vector in zip(article_payload, vectors)
+            ]
+            self.save_scales_for_articles(id_with_vectors)
+
             self.conn.commit()
             print(f"Embeddings updated: {len(update_rows)}")
 
         except Exception as e:
             print(f"Embedding generation skipped due to error: {e}")
             self.conn.rollback()
+
+    def save_scales_for_articles(self, article_vectors: list[tuple[int, list[float]]]):
+        from processors.scales.service import ScaleEmbeddingService
+
+        scale_service = ScaleEmbeddingService(self._get_embedding_service())
+
+        with self.conn.cursor() as cur:
+            for article_id, vector in article_vectors:
+                scales = scale_service.score_article_embedding(vector)
+
+                # чистим старые значения
+                cur.execute(
+                    "DELETE FROM article_scales WHERE article_id = %s",
+                    (article_id,),
+                )
+
+                # вставляем новые
+                execute_batch(
+                    cur,
+                    """
+                    INSERT INTO article_scales (article_id, scale_id, score, strength)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    [
+                        (article_id, s["scale_id"], s["score"], s["strength"])
+                        for s in scales
+                    ],
+                    page_size=20,
+                )
+
+                # опционально: primary_scale_id
+                primary = max(scales, key=lambda s: s["strength"])
+                cur.execute(
+                    "UPDATE articles SET primary_scale_id = %s WHERE id = %s",
+                    (primary["scale_id"], article_id),
+                )
