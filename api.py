@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from collections import defaultdict
 import psycopg2
 import psycopg2.extras
 import os
@@ -144,6 +145,30 @@ def get_articles(
         """
         cur.execute(articles_query, params + [page_size, offset])
         articles = cur.fetchall()
+
+        article_ids = [article["id"] for article in articles]
+
+        scales_by_article = defaultdict(list)
+
+        if article_ids:
+            scales_query = """
+                SELECT article_id, scale_id, score, strength
+                FROM article_scales
+                WHERE article_id = ANY(%s)
+                ORDER BY article_id, scale_id
+            """
+            cur.execute(scales_query, (article_ids,))
+            scale_rows = cur.fetchall()
+
+            for row in scale_rows:
+                scales_by_article[row["article_id"]].append({
+                    "scale_id": row["scale_id"],
+                    "score": row["score"],
+                    "strength": row["strength"],
+                })
+
+        for article in articles:
+            article["semantic_scales"] = scales_by_article.get(article["id"], [])
 
     conn.close()
 
