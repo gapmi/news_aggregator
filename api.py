@@ -107,50 +107,55 @@ def logout(token: str = Depends(require_auth)):
 def get_articles(
     source: str = Query(None),
     search: str = Query(None),
-    limit: int = Query(100, le=200),
-    offset: int = Query(0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=300),
 ):
+    offset = (page - 1) * page_size
+
     conn = get_conn()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        query = "SELECT * FROM articles WHERE 1=1"
+        where_clauses = ["1=1"]
         params = []
+
         if source:
-            query += " AND source = %s"
+            where_clauses.append("source = %s")
             params.append(source)
+
         if search:
-            query += " AND title ILIKE %s"
+            where_clauses.append("title ILIKE %s")
             params.append(f"%{search}%")
-        query += " ORDER BY published DESC NULLS LAST LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-        cur.execute(query, params)
+
+        where_sql = " AND ".join(where_clauses)
+
+        count_query = f"""
+            SELECT COUNT(*) AS total
+            FROM articles
+            WHERE {where_sql}
+        """
+        cur.execute(count_query, params)
+        total = cur.fetchone()["total"]
+
+        articles_query = f"""
+            SELECT *
+            FROM articles
+            WHERE {where_sql}
+            ORDER BY published DESC NULLS LAST
+            LIMIT %s OFFSET %s
+        """
+        cur.execute(articles_query, params + [page_size, offset])
         articles = cur.fetchall()
-
-        article_ids = [a["id"] for a in articles]
-        scales_map: dict[int, list[dict]] = {}
-
-        if article_ids:
-            cur.execute(
-                """
-                SELECT article_id, scale_id, score, strength
-                FROM article_scales
-                WHERE article_id = ANY(%s)
-                """,
-                (article_ids,),
-            )
-            rows = cur.fetchall()
-            for r in rows:
-                scales_map.setdefault(r["article_id"], []).append({
-                    "id": r["scale_id"],
-                    "score": float(r["score"]),
-                    "strength": float(r["strength"]),
-                })
 
     conn.close()
 
-    for a in articles:
-        a["semantic_scales"] = scales_map.get(a["id"], [])
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
-    return {"articles": articles, "total": len(articles)}
+    return {
+        "articles": articles,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 @app.get("/sources")
 def get_sources_public():
