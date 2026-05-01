@@ -134,9 +134,17 @@ def get_articles(
         """
         cur.execute(count_query, params)
         total = cur.fetchone()["total"]
-
         articles_query = f"""
-            SELECT *
+            SELECT
+                id,
+                title,
+                url,
+                source,
+                description,
+                published,
+                collected_at,
+                primary_scale_id,
+                semantic_scales
             FROM articles
             WHERE {where_sql}
             ORDER BY published DESC NULLS LAST
