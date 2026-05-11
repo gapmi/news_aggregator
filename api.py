@@ -185,11 +185,27 @@ def get_articles(
 @app.get("/sources")
 def get_sources_public():
     conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT source FROM articles ORDER BY source")
-        sources = [row[0] for row in cur.fetchall()]
-    conn.close()
-    return {"sources": sources}
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, name, type
+                FROM sources
+                ORDER BY type, name
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    # Можно вернуть объектами, но для начала оставим простой список имён,
+    # чтобы не ломать фронт, если он ждёт { sources: string[] }
+    names = [row["name"] for row in rows]
+
+    return {
+        "sources": names,
+        "items": rows,  # на будущее, если фронту пригодятся id/type
+    }
 
 # --- Admin: статистика ---
 @app.get("/admin/stats")
