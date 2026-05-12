@@ -24,13 +24,20 @@ def main():
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT COUNT(*) AS total
+                SELECT id, title, embedding
                 FROM articles
                 WHERE embedding IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 5
                 """
             )
-            row = cur.fetchone()
-            print(row["total"])
+            rows = cur.fetchall()
+
+            print(len(rows))
+            if rows:
+                print(rows[0]["id"])
+                print(rows[0]["title"])
+                print(type(rows[0]["embedding"]).__name__)
     finally:
         conn.close()
 
