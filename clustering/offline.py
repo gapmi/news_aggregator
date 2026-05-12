@@ -1,6 +1,6 @@
 import json
 import os
-from collections import Counter
+from collections import Counter, defaultdict
 
 import hdbscan
 import numpy as np
@@ -73,13 +73,23 @@ def main():
             labels = clusterer.fit_predict(X)
 
             counts = Counter(labels.tolist())
-
             print(f"label_counts={dict(sorted(counts.items()))}")
             print(f"noise_count={counts.get(-1, 0)}")
             print(f"cluster_count={len([k for k in counts.keys() if k != -1])}")
 
-            for i in range(min(10, len(rows))):
-                print(f"id={rows[i]['id']} label={labels[i]} title={rows[i]['title']}")
+            clusters = defaultdict(list)
+            for row, label in zip(rows, labels):
+                clusters[label].append(row)
+
+            for label in sorted(k for k in clusters.keys() if k != -1):
+                print(f"\n=== Cluster {label} (size={len(clusters[label])}) ===")
+                for article in clusters[label][:10]:
+                    print(f"- [{article['id']}] {article['title']}")
+
+            if -1 in clusters:
+                print(f"\n=== Noise (label=-1, size={len(clusters[-1])}) – first 10 ===")
+                for article in clusters[-1][:10]:
+                    print(f"- [{article['id']}] {article['title']}")
     finally:
         conn.close()
 
