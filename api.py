@@ -1,9 +1,11 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from collections import defaultdict
 from datetime import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
 import psycopg2
 import psycopg2.extras
 import os
@@ -29,18 +31,8 @@ logging.getLogger().addHandler(log_capture)
 
 active_tokens: set[str] = set()
 collection_status = {"running": False, "last_run": None}
-
-
-app = FastAPI()
+scheduler = BackgroundScheduler()
 security = HTTPBearer()
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
@@ -78,9 +70,6 @@ def init_sources_table():
         conn.commit()
     finally:
         conn.close()
-
-
-init_sources_table()
 
 
 def load_sources_from_db():
@@ -125,6 +114,45 @@ def load_sources_from_db():
                 )
 
     return rss_sources, html_sources
+
+
+def start_collection_job():
+    if collection_status["running"]:
+        return
+
+    thread = threading.Thread(target=run_collection, daemon=True)
+    thread.start()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_sources_table()
+
+    scheduler.add_job(
+        start_collection_job,
+        "interval",
+        hours=1,
+        id="news_collection_job",
+        replace_existing=True,
+    )
+    scheduler.start()
+
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class LoginRequest(BaseModel):
@@ -379,11 +407,9 @@ def add_source(body: SourceCreate, _: str = Depends(require_auth)):
                 (body.name, body.url, body.type),
             )
         conn.commit()
-
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         raise HTTPException(status_code=409, detail="Source already exists")
-
     finally:
         conn.close()
 
