@@ -53,6 +53,47 @@ def get_conn():
         password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd")
     )
 
+def load_sources_from_db():
+    from config import RSSSource, HTMLSource
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT name, url, type
+                FROM sources
+                ORDER BY type, name
+            """)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    rss_sources = []
+    html_sources = []
+
+    for row in rows:
+        if row["type"] == "rss":
+            rss_sources.append(
+                RSSSource(
+                    name=row["name"],
+                    url=row["url"],
+                )
+            )
+        elif row["type"] == "html":
+            if row["name"] == "Hacker News":
+                html_sources.append(
+                    HTMLSource(
+                        name=row["name"],
+                        url=row["url"],
+                        article_selector=".athing",
+                        title_selector=".titleline > a",
+                        link_selector=".titleline > a",
+                        description_selector="",
+                    )
+                )
+
+    return rss_sources, html_sources
+
 def init_sources_table():
     conn = get_conn()
     with conn.cursor() as cur:
@@ -245,13 +286,15 @@ def run_collection():
         cfg = Config()
         all_articles = []
 
-        for src in cfg.rss_sources:
-            scraper = RSSScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
-            all_articles.extend(scraper.fetch())
+        rss_sources, html_sources = load_sources_from_db()
 
-        for src in cfg.html_sources:
+        for src in rss_sources:
+            scraper = RSSScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
+        all_articles.extend(scraper.fetch())
+
+        for src in html_sources:
             scraper = HTMLScraper(src, timeout=cfg.request_timeout, user_agent=cfg.user_agent)
-            all_articles.extend(scraper.fetch())
+        all_articles.extend(scraper.fetch())
 
         all_articles = deduplicate(all_articles)
         storage = PGStorage()
