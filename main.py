@@ -1,4 +1,5 @@
 """News Aggregator — entry point."""
+
 import logging
 import sys
 import time
@@ -8,7 +9,6 @@ from processors import deduplicate
 from scrapers import HTMLScraper, RSSScraper
 from scrapers.base import Article
 from storage.pg_storage import PGStorage
-
 
 logging.basicConfig(
     level=logging.INFO,
