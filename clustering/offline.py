@@ -1,6 +1,8 @@
 import json
 import os
+from collections import Counter
 
+import hdbscan
 import numpy as np
 import psycopg2
 import psycopg2.extras
@@ -40,7 +42,7 @@ def main():
                 FROM articles
                 WHERE embedding IS NOT NULL
                 ORDER BY id DESC
-                LIMIT 5
+                LIMIT 200
                 """
             )
             rows = cur.fetchall()
@@ -59,13 +61,25 @@ def main():
 
             X = np.vstack(embeddings)
 
-            print(f"first_id={ids[0]}")
-            print(f"first_title={rows[0]['title']}")
             print(f"shape={X.shape}")
             print(f"dtype={X.dtype}")
-            print(f"first_dim={X.shape[1]}")
             print(f"has_nan={np.isnan(X).any()}")
-            print(f"first_5_values={X[0][:5].tolist()}")
+
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=5,
+                min_samples=3,
+                metric="euclidean",
+            )
+            labels = clusterer.fit_predict(X)
+
+            counts = Counter(labels.tolist())
+
+            print(f"label_counts={dict(sorted(counts.items()))}")
+            print(f"noise_count={counts.get(-1, 0)}")
+            print(f"cluster_count={len([k for k in counts.keys() if k != -1])}")
+
+            for i in range(min(10, len(rows))):
+                print(f"id={rows[i]['id']} label={labels[i]} title={rows[i]['title']}")
     finally:
         conn.close()
 
