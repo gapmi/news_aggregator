@@ -9,3 +9,4 @@ uvicorn[standard]>=0.29.0
 pgvector>=0.3.0
 sentence-transformers==3.0.1
 torch==2.5.1+cpu ; platform_system == "Linux"
+APScheduler>=3.10.4
