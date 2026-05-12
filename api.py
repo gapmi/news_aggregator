@@ -233,6 +233,7 @@ def get_articles(
 
             article_ids = [article["id"] for article in articles]
             scales_by_article = defaultdict(list)
+            badges_by_article = defaultdict(list)
 
             if article_ids:
                 scales_query = """
@@ -253,8 +254,27 @@ def get_articles(
                         }
                     )
 
+                badges_query = """
+                    SELECT article_id, tag_text, tag_kind, score
+                    FROM article_tags
+                    WHERE article_id = ANY(%s)
+                    ORDER BY article_id, score DESC NULLS LAST, tag_text
+                """
+                cur.execute(badges_query, (article_ids,))
+                badge_rows = cur.fetchall()
+
+                for row in badge_rows:
+                    badges_by_article[row["article_id"]].append(
+                        {
+                            "tag": row["tag_text"],
+                            "kind": row["tag_kind"],
+                            "score": row["score"],
+                        }
+                    )
             for article in articles:
                 article["semantic_scales"] = scales_by_article.get(article["id"], [])
+                article["badges"] = badges_by_article.get(article["id"], [])
+
     finally:
         conn.close()
 
