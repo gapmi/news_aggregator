@@ -340,6 +340,42 @@ def get_stats(_: str = Depends(require_auth)):
 def get_logs(_: str = Depends(require_auth)):
     return {"logs": run_logs[-100:]}
 
+@app.get("/topics")
+def get_topics():
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                WITH latest_run AS (
+                    SELECT id, started_at, finished_at
+                    FROM clustering_runs
+                    WHERE status = 'success'
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                )
+                SELECT
+                    c.id AS cluster_id,
+                    c.run_id,
+                    c.label,
+                    c.size,
+                    c.representative_article_id,
+                    c.representative_title,
+                    lr.started_at,
+                    lr.finished_at
+                FROM clusters c
+                JOIN latest_run lr ON lr.id = c.run_id
+                ORDER BY c.size DESC, c.id DESC
+                """
+            )
+            rows = cur.fetchall()
+
+        return {
+            "topics": rows,
+            "total": len(rows),
+        }
+    finally:
+        conn.close()
 
 def run_collection():
     global run_logs
