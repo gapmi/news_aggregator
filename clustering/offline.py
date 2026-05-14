@@ -7,21 +7,26 @@ import hdbscan
 import numpy as np
 import psycopg2
 import psycopg2.extras
+from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
 
 def get_conn():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
-        return psycopg2.connect(db_url)
+        conn = psycopg2.connect(db_url)
+        register_vector(conn)
+        return conn
 
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=os.getenv("DB_HOST", "db"),
         port=os.getenv("DB_PORT", "5432"),
         dbname=os.getenv("DB_NAME", "news_db"),
         user=os.getenv("DB_USER", "postgres"),
         password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd"),
     )
+    register_vector(conn)
+    return conn
 
 
 def parse_args():
@@ -69,7 +74,7 @@ def load_batch(window_hours=24, limit=500):
         return None, None
 
     embeddings = [parse_embedding(row["embedding"]) for row in rows]
-    X = np.vstack(embeddings)
+    X = np.vstack(embeddings).astype(np.float32)
 
     print(f"shape={X.shape}")
     print(f"dtype={X.dtype}")
@@ -78,8 +83,13 @@ def load_batch(window_hours=24, limit=500):
     return rows, X
 
 
-def choose_representative(cluster_rows, cluster_vectors):
-    centroid = cluster_vectors.mean(axis=0)
+def compute_centroid(cluster_vectors):
+    return cluster_vectors.mean(axis=0).astype(np.float32)
+
+
+def choose_representative(cluster_rows, cluster_vectors, centroid=None):
+    if centroid is None:
+        centroid = compute_centroid(cluster_vectors)
     distances = np.linalg.norm(cluster_vectors - centroid, axis=1)
     idx = int(np.argmin(distances))
     return cluster_rows[idx]
@@ -123,9 +133,14 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
     for label in ordered_labels:
         items = grouped[label]
         cluster_rows = [item[0] for item in items]
-        cluster_vectors = np.vstack([item[1] for item in items])
+        cluster_vectors = np.vstack([item[1] for item in items]).astype(np.float32)
 
-        representative = choose_representative(cluster_rows, cluster_vectors)
+        centroid = compute_centroid(cluster_vectors)
+        representative = choose_representative(
+            cluster_rows,
+            cluster_vectors,
+            centroid=centroid,
+        )
 
         cluster_insert_rows.append(
             (
@@ -134,6 +149,7 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
                 len(cluster_rows),
                 representative["id"],
                 representative["title"],
+                centroid,
             )
         )
 
@@ -147,7 +163,8 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
                 label,
                 size,
                 representative_article_id,
-                representative_title
+                representative_title,
+                centroid
             )
             VALUES %s
             RETURNING id, label
