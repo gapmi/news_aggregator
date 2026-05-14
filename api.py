@@ -287,7 +287,7 @@ def get_articles(
             total = cur.fetchone()["total"]
 
             articles_query = f"""
-                SELECT *
+                SELECT id, title, url, published, source, primary_scale_id
                 FROM articles
                 WHERE {where_sql}
                 ORDER BY published DESC NULLS LAST
@@ -329,7 +329,7 @@ def semantic_search(
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT *
+                SELECT id, title, url, published, source, primary_scale_id
                 FROM articles
                 WHERE embedding IS NOT NULL
                 ORDER BY embedding <=> %s
@@ -337,6 +337,7 @@ def semantic_search(
                 """,
                 (query_embedding, limit),
             )
+
             articles = cur.fetchall()
             enrich_articles_with_scales_and_badges(cur, articles)
     finally:
@@ -469,7 +470,13 @@ def get_topic_detail(cluster_id: int):
 
             cur.execute(
                 """
-                SELECT a.*
+                SELECT
+                    a.id,
+                    a.title,
+                    a.url,
+                    a.published,
+                    a.source,
+                    a.primary_scale_id
                 FROM cluster_articles ca
                 JOIN articles a ON a.id = ca.article_id
                 WHERE ca.cluster_id = %s
