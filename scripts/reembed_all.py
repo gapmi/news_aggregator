@@ -42,13 +42,13 @@ def build_text(row) -> str:
     parts: List[str] = []
 
     title = (row.get("title") or "").strip()
-    description = (row.get("description") or "").strip()
+    summary = (row.get("summary") or "").strip()
     content = (row.get("content") or "").strip()
 
     if title:
         parts.append(title)
-    if description:
-        parts.append(description)
+    if summary:
+        parts.append(summary)
     if content:
         parts.append(content)
 
@@ -58,7 +58,7 @@ def build_text(row) -> str:
 
 def load_batch(conn, batch_size: int, offset: int):
     query = """
-        SELECT id, title, description, content
+        SELECT id, title, summary, content
         FROM articles
         WHERE COALESCE(title, '') <> ''
         ORDER BY id
