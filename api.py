@@ -449,6 +449,103 @@ def list_sources(_: str = Depends(require_auth)):
 
     return {"sources": sources}
 
+@app.get("/topics/{cluster_id}")
+def get_topic_detail(cluster_id: int):
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    c.id AS cluster_id,
+                    c.run_id,
+                    c.label,
+                    c.size,
+                    c.representative_article_id,
+                    c.representative_title,
+                    r.started_at,
+                    r.finished_at
+                FROM clusters c
+                JOIN clustering_runs r ON r.id = c.run_id
+                WHERE c.id = %s
+                LIMIT 1
+                """,
+                (cluster_id,),
+            )
+            topic = cur.fetchone()
+
+            if not topic:
+                raise HTTPException(status_code=404, detail="Topic not found")
+
+            cur.execute(
+                """
+                SELECT a.*
+                FROM cluster_articles ca
+                JOIN articles a ON a.id = ca.article_id
+                WHERE ca.cluster_id = %s
+                ORDER BY a.published DESC NULLS LAST, a.id DESC
+                """,
+                (cluster_id,),
+            )
+            articles = cur.fetchall()
+
+            article_ids = [article["id"] for article in articles]
+            scales_by_article = defaultdict(list)
+            badges_by_article = defaultdict(list)
+
+            if article_ids:
+                cur.execute(
+                    """
+                    SELECT article_id, scale_id, score, strength
+                    FROM article_scales
+                    WHERE article_id = ANY(%s)
+                    ORDER BY article_id, scale_id
+                    """,
+                    (article_ids,),
+                )
+                scale_rows = cur.fetchall()
+
+                for row in scale_rows:
+                    scales_by_article[row["article_id"]].append(
+                        {
+                            "scale_id": row["scale_id"],
+                            "score": row["score"],
+                            "strength": row["strength"],
+                        }
+                    )
+
+                cur.execute(
+                    """
+                    SELECT article_id, tag_text, tag_kind, score
+                    FROM article_tags
+                    WHERE article_id = ANY(%s)
+                    ORDER BY article_id, score DESC NULLS LAST, tag_text
+                    """,
+                    (article_ids,),
+                )
+                badge_rows = cur.fetchall()
+
+                for row in badge_rows:
+                    badges_by_article[row["article_id"]].append(
+                        {
+                            "tag": row["tag_text"],
+                            "kind": row["tag_kind"],
+                            "score": row["score"],
+                        }
+                    )
+
+            for article in articles:
+                article["semantic_scales"] = scales_by_article.get(article["id"], [])
+                article["badges"] = badges_by_article.get(article["id"], [])
+
+        return {
+            "topic": topic,
+            "articles": articles,
+            "total": len(articles),
+        }
+    finally:
+        conn.close()
+
 
 @app.post("/admin/sources")
 def add_source(body: SourceCreate, _: str = Depends(require_auth)):
