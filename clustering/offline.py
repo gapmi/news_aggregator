@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 from collections import Counter, defaultdict
@@ -23,6 +24,16 @@ def get_conn():
     )
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", default="auto", choices=["auto"])
+    parser.add_argument("--window-hours", type=int, default=24)
+    parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument("--min-cluster-size", type=int, default=5)
+    parser.add_argument("--min-samples", type=int, default=3)
+    return parser.parse_args()
+
+
 def parse_embedding(value):
     if value is None:
         return None
@@ -42,6 +53,7 @@ def load_batch(window_hours=24, limit=500):
                 SELECT id, title, embedding, published
                 FROM articles
                 WHERE embedding IS NOT NULL
+                  AND published IS NOT NULL
                   AND published >= NOW() - (%s || ' hours')::interval
                 ORDER BY published DESC, id DESC
                 LIMIT %s
@@ -96,17 +108,20 @@ def save_run_start(conn, window_hours, min_cluster_size, min_samples):
 
 
 def save_clusters_and_links(conn, run_id, rows, X, labels):
-    clusters = defaultdict(list)
+    grouped = defaultdict(list)
+
     for idx, (row, label) in enumerate(zip(rows, labels)):
-        if label == -1:
+        if int(label) == -1:
             continue
-        clusters[int(label)].append((row, X[idx]))
+        grouped[int(label)].append((row, X[idx]))
+
+    ordered_labels = sorted(grouped.keys())
+    if not ordered_labels:
+        return 0
 
     cluster_insert_rows = []
-    ordered_labels = sorted(clusters.keys())
-
     for label in ordered_labels:
-        items = clusters[label]
+        items = grouped[label]
         cluster_rows = [item[0] for item in items]
         cluster_vectors = np.vstack([item[1] for item in items])
 
@@ -123,7 +138,6 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
         )
 
     cluster_id_by_label = {}
-
     with conn.cursor() as cur:
         execute_values(
             cur,
@@ -146,19 +160,20 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
     link_rows = []
     for label in ordered_labels:
         cluster_id = cluster_id_by_label[label]
-        for row, _vector in clusters[label]:
+        for row, _vector in grouped[label]:
             link_rows.append((cluster_id, row["id"]))
 
-    with conn.cursor() as cur:
-        execute_values(
-            cur,
-            """
-            INSERT INTO cluster_articles (cluster_id, article_id)
-            VALUES %s
-            ON CONFLICT DO NOTHING
-            """,
-            link_rows,
-        )
+    if link_rows:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO cluster_articles (cluster_id, article_id)
+                VALUES %s
+                ON CONFLICT DO NOTHING
+                """,
+                link_rows,
+            )
 
     return len(ordered_labels)
 
@@ -193,10 +208,12 @@ def update_run_failed(conn, run_id):
 
 
 def main():
-    window_hours = 24
-    limit = 500
-    min_cluster_size = 5
-    min_samples = 3
+    args = parse_args()
+
+    window_hours = args.window_hours
+    limit = args.limit
+    min_cluster_size = args.min_cluster_size
+    min_samples = args.min_samples
 
     rows, X = load_batch(window_hours=window_hours, limit=limit)
     if rows is None:
