@@ -6,12 +6,15 @@ from pydantic import BaseModel
 from collections import defaultdict
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
+from pgvector.psycopg2 import register_vector
+from sentence_transformers import SentenceTransformer
 import psycopg2
 import psycopg2.extras
 import os
 import secrets
 import threading
 import logging
+import numpy as np
 
 
 run_logs: list[str] = []
@@ -34,23 +37,39 @@ collection_status = {"running": False, "last_run": None}
 scheduler = BackgroundScheduler()
 security = HTTPBearer()
 
-
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "secret123")
+
+SEARCH_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+_search_model = None
+_search_model_lock = threading.Lock()
+
+
+def get_search_model():
+    global _search_model
+    if _search_model is None:
+        with _search_model_lock:
+            if _search_model is None:
+                _search_model = SentenceTransformer(SEARCH_MODEL_NAME)
+    return _search_model
 
 
 def get_conn():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
-        return psycopg2.connect(db_url)
+        conn = psycopg2.connect(db_url)
+        register_vector(conn)
+        return conn
 
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=os.getenv("DB_HOST", "db"),
         port=os.getenv("DB_PORT", "5432"),
         dbname=os.getenv("DB_NAME", "news_db"),
         user=os.getenv("DB_USER", "postgres"),
         password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd"),
     )
+    register_vector(conn)
+    return conn
 
 
 def init_sources_table():
@@ -146,7 +165,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -170,6 +188,53 @@ def require_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if credentials.credentials not in active_tokens:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials.credentials
+
+
+def enrich_articles_with_scales_and_badges(cur, articles):
+    article_ids = [article["id"] for article in articles]
+    scales_by_article = defaultdict(list)
+    badges_by_article = defaultdict(list)
+
+    if article_ids:
+        scales_query = """
+            SELECT article_id, scale_id, score, strength
+            FROM article_scales
+            WHERE article_id = ANY(%s)
+            ORDER BY article_id, scale_id
+        """
+        cur.execute(scales_query, (article_ids,))
+        scale_rows = cur.fetchall()
+
+        for row in scale_rows:
+            scales_by_article[row["article_id"]].append(
+                {
+                    "scale_id": row["scale_id"],
+                    "score": row["score"],
+                    "strength": row["strength"],
+                }
+            )
+
+        badges_query = """
+            SELECT article_id, tag_text, tag_kind, score
+            FROM article_tags
+            WHERE article_id = ANY(%s)
+            ORDER BY article_id, score DESC NULLS LAST, tag_text
+        """
+        cur.execute(badges_query, (article_ids,))
+        badge_rows = cur.fetchall()
+
+        for row in badge_rows:
+            badges_by_article[row["article_id"]].append(
+                {
+                    "tag": row["tag_text"],
+                    "kind": row["tag_kind"],
+                    "score": row["score"],
+                }
+            )
+
+    for article in articles:
+        article["semantic_scales"] = scales_by_article.get(article["id"], [])
+        article["badges"] = badges_by_article.get(article["id"], [])
 
 
 @app.post("/admin/login")
@@ -231,49 +296,7 @@ def get_articles(
             cur.execute(articles_query, params + [page_size, offset])
             articles = cur.fetchall()
 
-            article_ids = [article["id"] for article in articles]
-            scales_by_article = defaultdict(list)
-            badges_by_article = defaultdict(list)
-
-            if article_ids:
-                scales_query = """
-                    SELECT article_id, scale_id, score, strength
-                    FROM article_scales
-                    WHERE article_id = ANY(%s)
-                    ORDER BY article_id, scale_id
-                """
-                cur.execute(scales_query, (article_ids,))
-                scale_rows = cur.fetchall()
-
-                for row in scale_rows:
-                    scales_by_article[row["article_id"]].append(
-                        {
-                            "scale_id": row["scale_id"],
-                            "score": row["score"],
-                            "strength": row["strength"],
-                        }
-                    )
-
-                badges_query = """
-                    SELECT article_id, tag_text, tag_kind, score
-                    FROM article_tags
-                    WHERE article_id = ANY(%s)
-                    ORDER BY article_id, score DESC NULLS LAST, tag_text
-                """
-                cur.execute(badges_query, (article_ids,))
-                badge_rows = cur.fetchall()
-
-                for row in badge_rows:
-                    badges_by_article[row["article_id"]].append(
-                        {
-                            "tag": row["tag_text"],
-                            "kind": row["tag_kind"],
-                            "score": row["score"],
-                        }
-                    )
-            for article in articles:
-                article["semantic_scales"] = scales_by_article.get(article["id"], [])
-                article["badges"] = badges_by_article.get(article["id"], [])
+            enrich_articles_with_scales_and_badges(cur, articles)
 
     finally:
         conn.close()
@@ -286,6 +309,43 @@ def get_articles(
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
+    }
+
+
+@app.get("/search")
+def semantic_search(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    model = get_search_model()
+    query_embedding = model.encode(
+        [q],
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )[0].astype(np.float32)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM articles
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """,
+                (query_embedding, limit),
+            )
+            articles = cur.fetchall()
+            enrich_articles_with_scales_and_badges(cur, articles)
+    finally:
+        conn.close()
+
+    return {
+        "query": q,
+        "total": len(articles),
+        "articles": articles,
     }
 
 
@@ -340,6 +400,7 @@ def get_stats(_: str = Depends(require_auth)):
 def get_logs(_: str = Depends(require_auth)):
     return {"logs": run_logs[-100:]}
 
+
 @app.get("/topics")
 def get_topics():
     conn = get_conn()
@@ -376,6 +437,58 @@ def get_topics():
         }
     finally:
         conn.close()
+
+
+@app.get("/topics/{cluster_id}")
+def get_topic_detail(cluster_id: int):
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    c.id AS cluster_id,
+                    c.run_id,
+                    c.label,
+                    c.size,
+                    c.representative_article_id,
+                    c.representative_title,
+                    r.started_at,
+                    r.finished_at
+                FROM clusters c
+                JOIN clustering_runs r ON r.id = c.run_id
+                WHERE c.id = %s
+                LIMIT 1
+                """,
+                (cluster_id,),
+            )
+            topic = cur.fetchone()
+
+            if not topic:
+                raise HTTPException(status_code=404, detail="Topic not found")
+
+            cur.execute(
+                """
+                SELECT a.*
+                FROM cluster_articles ca
+                JOIN articles a ON a.id = ca.article_id
+                WHERE ca.cluster_id = %s
+                ORDER BY a.published DESC NULLS LAST, a.id DESC
+                """,
+                (cluster_id,),
+            )
+            articles = cur.fetchall()
+
+            enrich_articles_with_scales_and_badges(cur, articles)
+
+        return {
+            "topic": topic,
+            "articles": articles,
+            "total": len(articles),
+        }
+    finally:
+        conn.close()
+
 
 def run_collection():
     global run_logs
@@ -448,103 +561,6 @@ def list_sources(_: str = Depends(require_auth)):
         conn.close()
 
     return {"sources": sources}
-
-@app.get("/topics/{cluster_id}")
-def get_topic_detail(cluster_id: int):
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    c.id AS cluster_id,
-                    c.run_id,
-                    c.label,
-                    c.size,
-                    c.representative_article_id,
-                    c.representative_title,
-                    r.started_at,
-                    r.finished_at
-                FROM clusters c
-                JOIN clustering_runs r ON r.id = c.run_id
-                WHERE c.id = %s
-                LIMIT 1
-                """,
-                (cluster_id,),
-            )
-            topic = cur.fetchone()
-
-            if not topic:
-                raise HTTPException(status_code=404, detail="Topic not found")
-
-            cur.execute(
-                """
-                SELECT a.*
-                FROM cluster_articles ca
-                JOIN articles a ON a.id = ca.article_id
-                WHERE ca.cluster_id = %s
-                ORDER BY a.published DESC NULLS LAST, a.id DESC
-                """,
-                (cluster_id,),
-            )
-            articles = cur.fetchall()
-
-            article_ids = [article["id"] for article in articles]
-            scales_by_article = defaultdict(list)
-            badges_by_article = defaultdict(list)
-
-            if article_ids:
-                cur.execute(
-                    """
-                    SELECT article_id, scale_id, score, strength
-                    FROM article_scales
-                    WHERE article_id = ANY(%s)
-                    ORDER BY article_id, scale_id
-                    """,
-                    (article_ids,),
-                )
-                scale_rows = cur.fetchall()
-
-                for row in scale_rows:
-                    scales_by_article[row["article_id"]].append(
-                        {
-                            "scale_id": row["scale_id"],
-                            "score": row["score"],
-                            "strength": row["strength"],
-                        }
-                    )
-
-                cur.execute(
-                    """
-                    SELECT article_id, tag_text, tag_kind, score
-                    FROM article_tags
-                    WHERE article_id = ANY(%s)
-                    ORDER BY article_id, score DESC NULLS LAST, tag_text
-                    """,
-                    (article_ids,),
-                )
-                badge_rows = cur.fetchall()
-
-                for row in badge_rows:
-                    badges_by_article[row["article_id"]].append(
-                        {
-                            "tag": row["tag_text"],
-                            "kind": row["tag_kind"],
-                            "score": row["score"],
-                        }
-                    )
-
-            for article in articles:
-                article["semantic_scales"] = scales_by_article.get(article["id"], [])
-                article["badges"] = badges_by_article.get(article["id"], [])
-
-        return {
-            "topic": topic,
-            "articles": articles,
-            "total": len(articles),
-        }
-    finally:
-        conn.close()
 
 
 @app.post("/admin/sources")

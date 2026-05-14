@@ -1,12 +1,13 @@
 import argparse
 import json
 import os
-from collections import Counter, defaultdict
-
 import hdbscan
+
 import numpy as np
 import psycopg2
 import psycopg2.extras
+
+from collections import Counter, defaultdict
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
