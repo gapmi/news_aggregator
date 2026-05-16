@@ -10,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-
+ 
 
 def get_conn():
     db_url = os.getenv("DATABASE_URL")
