@@ -39,18 +39,8 @@ def parse_args():
 
 
 def build_text(row) -> str:
-    parts: List[str] = []
-
     title = (row.get("title") or "").strip()
-    source = (row.get("source") or "").strip()
-
-    if title:
-        parts.append(title)
-    if source:
-        parts.append(f"Source: {source}")
-
-    text = "\n\n".join(parts).strip()
-    return text[:4000]
+    return title[:4000]
 
 
 def load_batch(conn, batch_size: int, offset: int):
