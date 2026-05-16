@@ -11,6 +11,10 @@ from collections import Counter, defaultdict
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
+DEFAULT_WINDOW_HOURS = 168
+DEFAULT_LIMIT = 3000
+DEFAULT_MIN_CLUSTER_SIZE = 5
+DEFAULT_MIN_SAMPLES = 3
 
 def get_conn():
     db_url = os.getenv("DATABASE_URL")
@@ -33,10 +37,10 @@ def get_conn():
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", default="auto", choices=["auto"])
-    parser.add_argument("--window-hours", type=int, default=24)
-    parser.add_argument("--limit", type=int, default=500)
-    parser.add_argument("--min-cluster-size", type=int, default=5)
-    parser.add_argument("--min-samples", type=int, default=3)
+    parser.add_argument("--window-hours", type=int, default=DEFAULT_WINDOW_HOURS)
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    parser.add_argument("--min-cluster-size", type=int, default=DEFAULT_MIN_CLUSTER_SIZE)
+    parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     return parser.parse_args()
 
 
@@ -50,7 +54,7 @@ def parse_embedding(value):
     return np.array(value, dtype=np.float32)
 
 
-def load_batch(window_hours=24, limit=500):
+def load_batch(window_hours=DEFAULT_WINDOW_HOURS, limit=DEFAULT_LIMIT):
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
