@@ -90,6 +90,25 @@ def init_sources_table():
     finally:
         conn.close()
 
+def init_articles_table():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS articles (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT,
+                    url TEXT UNIQUE,
+                    published TIMESTAMP,
+                    source TEXT,
+                    embedding vector(384)
+                )
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 def load_sources_from_db():
     from config import RSSSource, HTMLSource
@@ -146,6 +165,7 @@ def start_collection_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_sources_table()
+    init_articles_table()
 
     scheduler.add_job(
         start_collection_job,
@@ -498,6 +518,68 @@ def get_topic_detail(cluster_id: int):
 
 
 def run_collection():
+    global run_logs
+    run_logs = []
+    collection_status["running"] = True
+
+    logging.warning("collection started")
+
+    try:
+        from config import Config
+        from scrapers import RSSScraper, HTMLScraper
+        from processors import deduplicate
+        from storage.pg_storage import PGStorage
+
+        cfg = Config()
+        all_articles = []
+
+        rss_sources, html_sources = load_sources_from_db()
+        logging.warning(
+            f"sources loaded: rss={len(rss_sources)}, html={len(html_sources)}"
+        )
+
+        for src in rss_sources:
+            logging.warning(f"rss start: {src.name}")
+            scraper = RSSScraper(
+                src,
+                timeout=cfg.request_timeout,
+                user_agent=cfg.user_agent,
+            )
+            items = scraper.fetch()
+            logging.warning(f"rss done: {src.name}, items={len(items)}")
+            all_articles.extend(items)
+
+        for src in html_sources:
+            logging.warning(f"html start: {src.name}")
+            scraper = HTMLScraper(
+                src,
+                timeout=cfg.request_timeout,
+                user_agent=cfg.user_agent,
+            )
+            items = scraper.fetch()
+            logging.warning(f"html done: {src.name}, items={len(items)}")
+            all_articles.extend(items)
+
+        logging.warning(f"before deduplicate: {len(all_articles)}")
+        all_articles = deduplicate(all_articles)
+        logging.warning(f"after deduplicate: {len(all_articles)}")
+
+        storage = PGStorage()
+        logging.warning("storage.save start")
+        storage.save(all_articles)
+        logging.warning("storage.save done")
+
+    except Exception as e:
+        import traceback
+
+        run_logs.append(f"ERROR: {e}")
+        run_logs.extend(traceback.format_exc().splitlines()[-30:])
+        logging.exception("collection failed")
+
+    finally:
+        collection_status["running"] = False
+        collection_status["last_run"] = datetime.now().isoformat()
+        logging.warning("collection finished")
     global run_logs
     run_logs = []
     collection_status["running"] = True

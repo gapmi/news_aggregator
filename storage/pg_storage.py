@@ -26,27 +26,9 @@ class PGStorage:
                     password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd"),
                 )
                 register_vector(self.conn)
-                self._create_table()
-                print("Database initialized successfully!")
             except Exception as e:
                 print(f"Waiting for DB... error: {e}")
                 time.sleep(5)
-
-    def _create_table(self):
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS articles (
-                    id SERIAL PRIMARY KEY,
-                    title TEXT,
-                    url TEXT UNIQUE,
-                    published TIMESTAMP,
-                    source TEXT,
-                    embedding vector(384)
-                )
-                """
-            )
-        self.conn.commit()
 
     def _get_embedding_service(self):
         if self.embedding_service is None:
