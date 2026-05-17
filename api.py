@@ -580,48 +580,6 @@ def run_collection():
         collection_status["running"] = False
         collection_status["last_run"] = datetime.now().isoformat()
         logging.warning("collection finished")
-    global run_logs
-    run_logs = []
-    collection_status["running"] = True
-
-    try:
-        from config import Config
-        from scrapers import RSSScraper, HTMLScraper
-        from processors import deduplicate
-        from storage.pg_storage import PGStorage
-
-        cfg = Config()
-        all_articles = []
-
-        rss_sources, html_sources = load_sources_from_db()
-
-        for src in rss_sources:
-            scraper = RSSScraper(
-                src,
-                timeout=cfg.request_timeout,
-                user_agent=cfg.user_agent,
-            )
-            all_articles.extend(scraper.fetch())
-
-        for src in html_sources:
-            scraper = HTMLScraper(
-                src,
-                timeout=cfg.request_timeout,
-                user_agent=cfg.user_agent,
-            )
-            all_articles.extend(scraper.fetch())
-
-        all_articles = deduplicate(all_articles)
-
-        storage = PGStorage()
-        storage.save(all_articles)
-
-    except Exception as e:
-        run_logs.append(f"ERROR: {e}")
-
-    finally:
-        collection_status["running"] = False
-        collection_status["last_run"] = datetime.now().isoformat()
 
 
 @app.post("/admin/collect")
