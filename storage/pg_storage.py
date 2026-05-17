@@ -1,9 +1,12 @@
 import os
+import re
 import time
+from datetime import datetime, timezone
 
 import psycopg2
 from psycopg2.extras import execute_batch
 from pgvector.psycopg2 import register_vector
+from dateutil import parser as date_parser
 
 from scrapers.base import Article
 
@@ -20,7 +23,7 @@ class PGStorage:
                     port=os.getenv("DB_PORT", "5432"),
                     dbname=os.getenv("DB_NAME", "news_db"),
                     user=os.getenv("DB_USER", "postgres"),
-                    password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd")
+                    password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd"),
                 )
                 register_vector(self.conn)
                 self._create_table()
@@ -31,7 +34,8 @@ class PGStorage:
 
     def _create_table(self):
         with self.conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS articles (
                     id SERIAL PRIMARY KEY,
                     title TEXT,
@@ -40,21 +44,68 @@ class PGStorage:
                     source TEXT,
                     embedding vector(384)
                 )
-            """)
+                """
+            )
         self.conn.commit()
 
     def _get_embedding_service(self):
         if self.embedding_service is None:
             from processors.embeddings import EmbeddingService
+
             self.embedding_service = EmbeddingService()
         return self.embedding_service
+
+    def _normalize_published(self, value):
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value
+
+        if not isinstance(value, str):
+            return None
+
+        raw = value.strip()
+        if not raw:
+            return None
+
+        cleaned = raw.replace("\u00a0", " ").strip()
+
+        try:
+            dt = date_parser.parse(cleaned, fuzzy=True)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+        except Exception:
+            pass
+
+        cleaned2 = re.sub(r"^[^\d]{1,20},\s*", "", cleaned).strip()
+
+        try:
+            dt = date_parser.parse(cleaned2, fuzzy=True)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+        except Exception:
+            return None
 
     def save(self, articles: list[Article]):
         saved_rows = []
 
         with self.conn.cursor() as cur:
             for a in articles:
-                cur.execute("""
+                published = self._normalize_published(a.published)
+
+                if a.published and published is None:
+                    print(
+                        f"WARNING: failed to parse published={a.published!r} "
+                        f"source={a.source!r} url={a.url!r}"
+                    )
+
+                cur.execute(
+                    """
                     INSERT INTO articles (title, url, published, source)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (url) DO UPDATE
@@ -62,14 +113,17 @@ class PGStorage:
                         published = EXCLUDED.published,
                         source = EXCLUDED.source
                     RETURNING id, title
-                """, (a.title, a.url, a.published, a.source))
+                    """,
+                    (a.title, a.url, published, a.source),
+                )
 
                 row = cur.fetchone()
-                saved_rows.append({
-                    "id": row[0],
-                    "title": row[1],
-                })
-
+                saved_rows.append(
+                    {
+                        "id": row[0],
+                        "title": row[1],
+                    }
+                )
 
         payload = [
             {"id": row["id"], "title": row["title"]}
@@ -77,8 +131,9 @@ class PGStorage:
             if row["title"]
         ]
 
+        self.conn.commit()
+
         if not payload:
-            self.conn.commit()
             return
 
         try:
@@ -103,7 +158,7 @@ class PGStorage:
                     cur,
                     "UPDATE articles SET embedding = %s WHERE id = %s",
                     update_rows,
-                    page_size=50
+                    page_size=50,
                 )
 
             id_with_vectors = [
@@ -128,13 +183,11 @@ class PGStorage:
             for article_id, vector in article_vectors:
                 scales = scale_service.score_article_embedding(vector)
 
-                # чистим старые значения
                 cur.execute(
                     "DELETE FROM article_scales WHERE article_id = %s",
                     (article_id,),
                 )
 
-                # вставляем новые
                 execute_batch(
                     cur,
                     """
@@ -148,7 +201,6 @@ class PGStorage:
                     page_size=20,
                 )
 
-                # опционально: primary_scale_id
                 primary = max(scales, key=lambda s: s["strength"])
                 cur.execute(
                     "UPDATE articles SET primary_scale_id = %s WHERE id = %s",
