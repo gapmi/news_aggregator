@@ -257,6 +257,42 @@ class RunsResponse(BaseModel):
     page: PageMeta
 
 
+class SankeyNodeResponse(BaseModel):
+    id: str
+    label: str | None
+    runId: int
+    clusterId: int
+    clusterLabel: int
+    size: int
+    depth: int
+    meta: dict
+
+
+class SankeyLinkResponse(BaseModel):
+    id: str
+    edgeId: int
+    source: str
+    target: str
+    value: float
+    score: float
+    overlapRatio: float
+    overlapCount: int
+    similarity: float
+
+
+class SankeyStatsResponse(BaseModel):
+    nodeCount: int
+    linkCount: int
+    runCount: int
+    truncated: bool
+
+
+class SankeyResponse(BaseModel):
+    nodes: list[SankeyNodeResponse]
+    links: list[SankeyLinkResponse]
+    stats: SankeyStatsResponse
+
+
 def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
@@ -971,5 +1007,149 @@ def list_clustering_runs(
             offset=offset,
             total=total,
             hasNext=offset + limit < total,
+        ),
+    )
+
+
+@app.get("/v1/clustering/views/sankey", response_model=SankeyResponse)
+def get_sankey_view(
+    start_run_id: int = Query(..., ge=1),
+    end_run_id: int = Query(..., ge=1),
+    min_score: float = Query(0.0, ge=0.0, le=1.0),
+    min_similarity: float | None = Query(None, ge=-1.0, le=1.0),
+    min_overlap_ratio: float | None = Query(None, ge=0.0, le=1.0),
+    min_overlap_count: int | None = Query(None, ge=0),
+    link_value: Literal["overlap_count", "score", "child_size", "parent_size"] = Query("overlap_count"),
+):
+    if start_run_id >= end_run_id:
+        raise HTTPException(
+            status_code=422,
+            detail="start_run_id must be less than end_run_id",
+        )
+
+    where_clauses = [
+        "cl.parent_run_id >= %s",
+        "cl.child_run_id <= %s",
+        "cl.score >= %s",
+    ]
+    params: list[object] = [start_run_id, end_run_id, min_score]
+
+    if min_similarity is not None:
+        where_clauses.append("cl.centroid_similarity >= %s")
+        params.append(min_similarity)
+
+    if min_overlap_ratio is not None:
+        where_clauses.append("cl.article_overlap_ratio >= %s")
+        params.append(min_overlap_ratio)
+
+    if min_overlap_count is not None:
+        where_clauses.append("cl.article_overlap_count >= %s")
+        params.append(min_overlap_count)
+
+    where_sql = " AND ".join(where_clauses)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    cl.id AS edge_id,
+                    cl.parent_run_id,
+                    cl.child_run_id,
+                    cl.parent_cluster_id,
+                    cl.child_cluster_id,
+                    cl.centroid_similarity,
+                    cl.article_overlap_ratio,
+                    cl.article_overlap_count,
+                    cl.parent_size,
+                    cl.child_size,
+                    cl.score,
+
+                    pc.label AS parent_label,
+                    pc.size AS parent_cluster_size,
+                    pc.representative_article_id AS parent_representative_article_id,
+                    pc.representative_title AS parent_representative_title,
+
+                    cc.label AS child_label,
+                    cc.size AS child_cluster_size,
+                    cc.representative_article_id AS child_representative_article_id,
+                    cc.representative_title AS child_representative_title
+                FROM cluster_lineage cl
+                JOIN clusters pc ON pc.id = cl.parent_cluster_id
+                JOIN clusters cc ON cc.id = cl.child_cluster_id
+                WHERE {where_sql}
+                ORDER BY cl.parent_run_id ASC, cl.child_run_id ASC, cl.score DESC, cl.id ASC
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    node_map: dict[str, SankeyNodeResponse] = {}
+    links: list[SankeyLinkResponse] = []
+
+    for row in rows:
+        source_id = make_cluster_node_id(row["parent_run_id"], row["parent_cluster_id"])
+        target_id = make_cluster_node_id(row["child_run_id"], row["child_cluster_id"])
+
+        if source_id not in node_map:
+            node_map[source_id] = SankeyNodeResponse(
+                id=source_id,
+                label=row["parent_representative_title"] or f"Cluster {row['parent_cluster_id']}",
+                runId=row["parent_run_id"],
+                clusterId=row["parent_cluster_id"],
+                clusterLabel=row["parent_label"],
+                size=row["parent_cluster_size"],
+                depth=row["parent_run_id"] - start_run_id,
+                meta={
+                    "representativeArticleId": row["parent_representative_article_id"],
+                },
+            )
+
+        if target_id not in node_map:
+            node_map[target_id] = SankeyNodeResponse(
+                id=target_id,
+                label=row["child_representative_title"] or f"Cluster {row['child_cluster_id']}",
+                runId=row["child_run_id"],
+                clusterId=row["child_cluster_id"],
+                clusterLabel=row["child_label"],
+                size=row["child_cluster_size"],
+                depth=row["child_run_id"] - start_run_id,
+                meta={
+                    "representativeArticleId": row["child_representative_article_id"],
+                },
+            )
+
+        value = {
+            "overlap_count": row["article_overlap_count"],
+            "score": row["score"],
+            "child_size": row["child_size"],
+            "parent_size": row["parent_size"],
+        }[link_value]
+
+        links.append(
+            SankeyLinkResponse(
+                id=f"edge:{row['edge_id']}",
+                edgeId=row["edge_id"],
+                source=source_id,
+                target=target_id,
+                value=value,
+                score=row["score"],
+                overlapRatio=row["article_overlap_ratio"],
+                overlapCount=row["article_overlap_count"],
+                similarity=row["centroid_similarity"],
+            )
+        )
+
+    return SankeyResponse(
+        nodes=list(node_map.values()),
+        links=links,
+        stats=SankeyStatsResponse(
+            nodeCount=len(node_map),
+            linkCount=len(links),
+            runCount=end_run_id - start_run_id + 1,
+            truncated=False,
         ),
     )
