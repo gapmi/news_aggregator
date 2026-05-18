@@ -3,16 +3,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
-import os
-import psycopg2
 
 log = logging.getLogger(__name__)
-
 
 DEFAULT_MIN_SIMILARITY = 0.80
 DEFAULT_MIN_OVERLAP_RATIO = 0.20
@@ -42,14 +40,16 @@ def get_conn():
 
 def get_last_two_completed_runs(conn) -> RunPair | None:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, started_at, finished_at
             FROM clustering_runs
             WHERE status IN ('success', 'completed')
-            AND finished_at IS NOT NULL
+              AND finished_at IS NOT NULL
             ORDER BY started_at DESC
             LIMIT 2
-        """)
+            """
+        )
         rows = cur.fetchall()
 
     if len(rows) < 2:
@@ -62,11 +62,14 @@ def get_last_two_completed_runs(conn) -> RunPair | None:
 
 def delete_existing_lineage(conn, parent_run_id: int, child_run_id: int) -> None:
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             DELETE FROM cluster_lineage
             WHERE parent_run_id = %s
               AND child_run_id = %s
-        """, (parent_run_id, child_run_id))
+            """,
+            (parent_run_id, child_run_id),
+        )
 
 
 def build_candidates(
@@ -78,7 +81,7 @@ def build_candidates(
     sim_weight: float,
     overlap_weight: float,
 ) -> list[dict[str, Any]]:
-    sql = f"""
+    sql = """
     WITH parent_clusters AS (
         SELECT id, run_id, size, centroid
         FROM clusters
@@ -89,7 +92,7 @@ def build_candidates(
         FROM clusters
         WHERE run_id = %(child_run_id)s
     ),
-    overlaps AS (
+    cluster_overlaps AS (
         SELECT
             pca.cluster_id AS parent_cluster_id,
             cca.cluster_id AS child_cluster_id,
@@ -121,7 +124,7 @@ def build_candidates(
         ) AS score
     FROM parent_clusters p
     CROSS JOIN child_clusters c
-    LEFT JOIN overlaps o
+    LEFT JOIN cluster_overlaps o
       ON o.parent_cluster_id = p.id
      AND o.child_cluster_id = c.id
     WHERE (1 - (p.centroid <=> c.centroid)) >= %(min_similarity)s
@@ -183,7 +186,7 @@ def select_mutual_best(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
 
     return sorted(
         best_by_child.values(),
-        key=lambda x: (x["parent_cluster_id"], x["child_cluster_id"])
+        key=lambda x: (x["parent_cluster_id"], x["child_cluster_id"]),
     )
 
 
@@ -192,7 +195,9 @@ def save_lineage(conn, matches: list[dict[str, Any]]) -> int:
         return 0
 
     with conn.cursor() as cur:
-        psycopg2.extras.execute_batch(cur, """
+        psycopg2.extras.execute_batch(
+            cur,
+            """
             INSERT INTO cluster_lineage (
                 parent_run_id,
                 child_run_id,
@@ -224,7 +229,10 @@ def save_lineage(conn, matches: list[dict[str, Any]]) -> int:
                 child_size = EXCLUDED.child_size,
                 score = EXCLUDED.score,
                 matched_at = now()
-        """, matches, page_size=100)
+            """,
+            matches,
+            page_size=100,
+        )
 
     return len(matches)
 
