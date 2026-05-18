@@ -43,10 +43,11 @@ def get_conn():
 def get_last_two_completed_runs(conn) -> RunPair | None:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
-            SELECT id
+            SELECT id, started_at, finished_at
             FROM clustering_runs
-            WHERE status = 'completed'
-            ORDER BY finished_at DESC NULLS LAST, id DESC
+            WHERE status IN ('success', 'completed')
+            AND finished_at IS NOT NULL
+            ORDER BY started_at DESC
             LIMIT 2
         """)
         rows = cur.fetchall()
