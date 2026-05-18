@@ -8,7 +8,8 @@ from typing import Any
 
 import psycopg2
 import psycopg2.extras
-
+import os
+import psycopg2
 
 log = logging.getLogger(__name__)
 
@@ -26,12 +27,16 @@ class RunPair:
 
 
 def get_conn():
+    password = os.getenv("DB_PASSWORD")
+    if not password:
+        raise RuntimeError("DB_PASSWORD is not set")
+
     return psycopg2.connect(
-        dbname="news_db",
-        user="postgres",
-        password="postgres",
-        host="postgres_db",
-        port=5432,
+        host=os.getenv("DB_HOST", "postgres_db"),
+        port=os.getenv("DB_PORT", "5432"),
+        dbname=os.getenv("DB_NAME", "news_db"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=password,
     )
 
 
