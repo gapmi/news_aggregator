@@ -431,7 +431,7 @@ def get_sources_public():
     }
 
 
-@app.get("/api/v1/clustering/lineage/edges", response_model=LineageEdgesResponse)
+@app.get("/v1/clustering/lineage/edges", response_model=LineageEdgesResponse)
 def list_lineage_edges(
     parent_run_id: int | None = Query(None),
     child_run_id: int | None = Query(None),
