@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import time
@@ -9,6 +10,8 @@ from pgvector.psycopg2 import register_vector
 from dateutil import parser as date_parser
 
 from scrapers.base import Article
+
+logger = logging.getLogger("news.collector")
 
 
 class PGStorage:
@@ -27,7 +30,7 @@ class PGStorage:
                 )
                 register_vector(self.conn)
             except Exception as e:
-                print(f"Waiting for DB... error: {e}")
+                logger.warning("waiting for DB connection failed: %s", e)
                 time.sleep(5)
 
     def _get_embedding_service(self):
@@ -81,9 +84,11 @@ class PGStorage:
                 published = self._normalize_published(a.published)
 
                 if a.published and published is None:
-                    print(
-                        f"WARNING: failed to parse published={a.published!r} "
-                        f"source={a.source!r} url={a.url!r}"
+                    logger.warning(
+                        "failed to parse published=%r source=%r url=%r",
+                        a.published,
+                        a.source,
+                        a.url,
                     )
 
                 cur.execute(
@@ -116,6 +121,7 @@ class PGStorage:
         self.conn.commit()
 
         if not payload:
+            logger.warning("storage.save finished with empty payload")
             return
 
         try:
@@ -150,10 +156,10 @@ class PGStorage:
             self.save_scales_for_articles(id_with_vectors)
 
             self.conn.commit()
-            print(f"Embeddings updated: {len(update_rows)}")
+            logger.warning("embeddings updated: %s", len(update_rows))
 
-        except Exception as e:
-            print(f"Embedding generation skipped due to error: {e}")
+        except Exception:
+            logger.exception("embedding generation skipped due to error")
             self.conn.rollback()
 
     def save_scales_for_articles(self, article_vectors: list[tuple[int, list[float]]]):

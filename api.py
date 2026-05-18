@@ -5,6 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from collections import defaultdict
 from datetime import datetime
+import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
@@ -18,7 +19,7 @@ import numpy as np
 
 
 run_logs: list[str] = []
-
+logger = logging.getLogger("news.collector")
 
 class LogCapture(logging.Handler):
     def emit(self, record):
@@ -176,11 +177,9 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
 
-    try:
-        yield
-    finally:
-        if scheduler.running:
-            scheduler.shutdown()
+    yield
+
+    scheduler.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -518,6 +517,103 @@ def get_topic_detail(cluster_id: int):
 
 
 def run_collection():
+    global run_logs
+
+    run_logs = []
+    collection_status["running"] = True
+    run_started_at = time.perf_counter()
+
+    logger.warning("collection started")
+
+    try:
+        from config import Config
+        from scrapers import RSSScraper, HTMLScraper
+        from processors import deduplicate
+        from storage.pg_storage import PGStorage
+
+        cfg = Config()
+        all_articles = []
+
+        rss_sources, html_sources = load_sources_from_db()
+        logger.warning(
+            "sources loaded: rss=%s, html=%s",
+            len(rss_sources),
+            len(html_sources),
+        )
+
+        for src in rss_sources:
+            source_started_at = time.perf_counter()
+            try:
+                logger.warning("rss start: %s", src.name)
+                scraper = RSSScraper(
+                    src,
+                    timeout=cfg.request_timeout,
+                    user_agent=cfg.user_agent,
+                )
+                items = scraper.fetch()
+                elapsed = time.perf_counter() - source_started_at
+                logger.warning(
+                    "rss done: %s, items=%s, duration=%.2fs",
+                    src.name,
+                    len(items),
+                    elapsed,
+                )
+                all_articles.extend(items)
+            except Exception:
+                elapsed = time.perf_counter() - source_started_at
+                logger.exception(
+                    "rss failed: %s, duration=%.2fs",
+                    src.name,
+                    elapsed,
+                )
+
+        for src in html_sources:
+            source_started_at = time.perf_counter()
+            try:
+                logger.warning("html start: %s", src.name)
+                scraper = HTMLScraper(
+                    src,
+                    timeout=cfg.request_timeout,
+                    user_agent=cfg.user_agent,
+                )
+                items = scraper.fetch()
+                elapsed = time.perf_counter() - source_started_at
+                logger.warning(
+                    "html done: %s, items=%s, duration=%.2fs",
+                    src.name,
+                    len(items),
+                    elapsed,
+                )
+                all_articles.extend(items)
+            except Exception:
+                elapsed = time.perf_counter() - source_started_at
+                logger.exception(
+                    "html failed: %s, duration=%.2fs",
+                    src.name,
+                    elapsed,
+                )
+
+        logger.warning("before deduplicate: %s", len(all_articles))
+        all_articles = deduplicate(all_articles)
+        logger.warning("after deduplicate: %s", len(all_articles))
+
+        storage = PGStorage()
+        logger.warning("storage.save start")
+        storage.save(all_articles)
+        logger.warning("storage.save done, saved_articles=%s", len(all_articles))
+
+    except Exception as e:
+        import traceback
+
+        run_logs.append(f"ERROR: {e}")
+        run_logs.extend(traceback.format_exc().splitlines()[-30:])
+        logger.exception("collection failed")
+
+    finally:
+        collection_status["running"] = False
+        collection_status["last_run"] = datetime.now().isoformat()
+        total_elapsed = time.perf_counter() - run_started_at
+        logger.warning("collection finished, duration=%.2fs", total_elapsed)
     global run_logs
     run_logs = []
     collection_status["running"] = True
