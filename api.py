@@ -293,6 +293,51 @@ class SankeyResponse(BaseModel):
     stats: SankeyStatsResponse
 
 
+class EulerClusterResponse(BaseModel):
+    id: str
+    runId: int
+    clusterId: int
+    clusterLabel: int
+    label: str | None
+    size: int
+
+
+class EulerOverlapResponse(BaseModel):
+    count: int
+    ratio: float
+    parentCoverage: float
+    childCoverage: float
+    unionSize: int
+    jaccard: float
+
+
+class EulerMetricsResponse(BaseModel):
+    similarity: float
+    score: float
+
+
+class EulerCirclesResponse(BaseModel):
+    parentArea: int
+    childArea: int
+    intersectionArea: int
+
+
+class EulerLabelsResponse(BaseModel):
+    title: str
+    subtitle: str
+    explanation: str
+
+
+class EulerPairDetailResponse(BaseModel):
+    edgeId: int
+    parent: EulerClusterResponse
+    child: EulerClusterResponse
+    overlap: EulerOverlapResponse
+    metrics: EulerMetricsResponse
+    circles: EulerCirclesResponse
+    labels: EulerLabelsResponse
+
+
 def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
@@ -1151,5 +1196,103 @@ def get_sankey_view(
             linkCount=len(links),
             runCount=end_run_id - start_run_id + 1,
             truncated=False,
+        ),
+    )
+
+
+@app.get("/v1/clustering/views/euler/{edge_id}", response_model=EulerPairDetailResponse)
+def get_euler_pair_detail(edge_id: int):
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    cl.id AS edge_id,
+                    cl.parent_run_id,
+                    cl.child_run_id,
+                    cl.parent_cluster_id,
+                    cl.child_cluster_id,
+                    cl.centroid_similarity,
+                    cl.article_overlap_ratio,
+                    cl.article_overlap_count,
+                    cl.parent_size,
+                    cl.child_size,
+                    cl.score,
+
+                    pc.label AS parent_label,
+                    pc.representative_title AS parent_representative_title,
+
+                    cc.label AS child_label,
+                    cc.representative_title AS child_representative_title
+                FROM cluster_lineage cl
+                JOIN clusters pc ON pc.id = cl.parent_cluster_id
+                JOIN clusters cc ON cc.id = cl.child_cluster_id
+                WHERE cl.id = %s
+                LIMIT 1
+                """,
+                (edge_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Lineage edge not found")
+
+    overlap_count = row["article_overlap_count"]
+    parent_size = row["parent_size"]
+    child_size = row["child_size"]
+    union_size = parent_size + child_size - overlap_count
+
+    parent_coverage = overlap_count / parent_size if parent_size else 0.0
+    child_coverage = overlap_count / child_size if child_size else 0.0
+    jaccard = overlap_count / union_size if union_size else 0.0
+
+    parent_title = row["parent_representative_title"] or f"Cluster {row['parent_cluster_id']}"
+    child_title = row["child_representative_title"] or f"Cluster {row['child_cluster_id']}"
+
+    return EulerPairDetailResponse(
+        edgeId=row["edge_id"],
+        parent=EulerClusterResponse(
+            id=make_cluster_node_id(row["parent_run_id"], row["parent_cluster_id"]),
+            runId=row["parent_run_id"],
+            clusterId=row["parent_cluster_id"],
+            clusterLabel=row["parent_label"],
+            label=parent_title,
+            size=parent_size,
+        ),
+        child=EulerClusterResponse(
+            id=make_cluster_node_id(row["child_run_id"], row["child_cluster_id"]),
+            runId=row["child_run_id"],
+            clusterId=row["child_cluster_id"],
+            clusterLabel=row["child_label"],
+            label=child_title,
+            size=child_size,
+        ),
+        overlap=EulerOverlapResponse(
+            count=overlap_count,
+            ratio=row["article_overlap_ratio"],
+            parentCoverage=round(parent_coverage, 6),
+            childCoverage=round(child_coverage, 6),
+            unionSize=union_size,
+            jaccard=round(jaccard, 6),
+        ),
+        metrics=EulerMetricsResponse(
+            similarity=row["centroid_similarity"],
+            score=row["score"],
+        ),
+        circles=EulerCirclesResponse(
+            parentArea=parent_size,
+            childArea=child_size,
+            intersectionArea=overlap_count,
+        ),
+        labels=EulerLabelsResponse(
+            title=f"Cluster {row['parent_cluster_id']} → Cluster {row['child_cluster_id']}",
+            subtitle=f"{overlap_count} shared articles · score {row['score']:.2f}",
+            explanation=(
+                f"Child keeps {parent_coverage * 100:.1f}% of parent articles "
+                f"and adds {child_size - overlap_count} new articles."
+            ),
         ),
     )
