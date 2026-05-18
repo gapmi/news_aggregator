@@ -338,6 +338,62 @@ class EulerPairDetailResponse(BaseModel):
     labels: EulerLabelsResponse
 
 
+class GraphPositionHintResponse(BaseModel):
+    lane: int
+    rank: int
+    x: float
+    y: float
+
+
+class GraphNodeResponse(BaseModel):
+    id: str
+    type: Literal["cluster"]
+    runId: int
+    clusterId: int
+    clusterLabel: int
+    label: str | None
+    size: int
+    group: str
+    positionHint: GraphPositionHintResponse
+    styleHints: dict
+    meta: dict
+
+
+class GraphEdgeResponse(BaseModel):
+    id: str
+    type: Literal["lineage"]
+    edgeId: int
+    source: str
+    target: str
+    label: str
+    score: float
+    similarity: float
+    overlapRatio: float
+    overlapCount: int
+    styleHints: dict
+
+
+class GraphGroupResponse(BaseModel):
+    id: str
+    type: Literal["run"]
+    label: str
+    runId: int
+    nodeCount: int
+
+
+class GraphStatsResponse(BaseModel):
+    nodeCount: int
+    edgeCount: int
+    truncated: bool
+
+
+class GraphResponse(BaseModel):
+    nodes: list[GraphNodeResponse]
+    edges: list[GraphEdgeResponse]
+    groups: list[GraphGroupResponse]
+    stats: GraphStatsResponse
+
+
 def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
@@ -1294,5 +1350,210 @@ def get_euler_pair_detail(edge_id: int):
                 f"Child keeps {parent_coverage * 100:.1f}% of parent articles "
                 f"and adds {child_size - overlap_count} new articles."
             ),
+        ),
+    )
+
+
+@app.get("/v1/clustering/views/graph", response_model=GraphResponse)
+def get_graph_view(
+    start_run_id: int = Query(..., ge=1),
+    end_run_id: int = Query(..., ge=1),
+    min_score: float = Query(0.0, ge=0.0, le=1.0),
+    min_similarity: float | None = Query(None, ge=-1.0, le=1.0),
+    min_overlap_ratio: float | None = Query(None, ge=0.0, le=1.0),
+    min_overlap_count: int | None = Query(None, ge=0),
+    max_nodes: int = Query(1000, ge=1, le=5000),
+    max_edges: int = Query(3000, ge=1, le=10000),
+):
+    if start_run_id >= end_run_id:
+        raise HTTPException(
+            status_code=422,
+            detail="start_run_id must be less than end_run_id",
+        )
+
+    where_clauses = [
+        "cl.parent_run_id >= %s",
+        "cl.child_run_id <= %s",
+        "cl.score >= %s",
+    ]
+    params: list[object] = [start_run_id, end_run_id, min_score]
+
+    if min_similarity is not None:
+        where_clauses.append("cl.centroid_similarity >= %s")
+        params.append(min_similarity)
+
+    if min_overlap_ratio is not None:
+        where_clauses.append("cl.article_overlap_ratio >= %s")
+        params.append(min_overlap_ratio)
+
+    if min_overlap_count is not None:
+        where_clauses.append("cl.article_overlap_count >= %s")
+        params.append(min_overlap_count)
+
+    where_sql = " AND ".join(where_clauses)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    cl.id AS edge_id,
+                    cl.parent_run_id,
+                    cl.child_run_id,
+                    cl.parent_cluster_id,
+                    cl.child_cluster_id,
+                    cl.centroid_similarity,
+                    cl.article_overlap_ratio,
+                    cl.article_overlap_count,
+                    cl.parent_size,
+                    cl.child_size,
+                    cl.score,
+
+                    pc.label AS parent_label,
+                    pc.size AS parent_cluster_size,
+                    pc.representative_article_id AS parent_representative_article_id,
+                    pc.representative_title AS parent_representative_title,
+
+                    cc.label AS child_label,
+                    cc.size AS child_cluster_size,
+                    cc.representative_article_id AS child_representative_article_id,
+                    cc.representative_title AS child_representative_title
+                FROM cluster_lineage cl
+                JOIN clusters pc ON pc.id = cl.parent_cluster_id
+                JOIN clusters cc ON cc.id = cl.child_cluster_id
+                WHERE {where_sql}
+                ORDER BY cl.parent_run_id ASC, cl.child_run_id ASC, cl.score DESC, cl.id ASC
+                LIMIT %s
+                """,
+                params + [max_edges + 1],
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    truncated = len(rows) > max_edges
+    rows = rows[:max_edges]
+
+    node_map: dict[str, GraphNodeResponse] = {}
+    edges: list[GraphEdgeResponse] = []
+    run_node_counts: dict[int, int] = {}
+
+    def add_node(
+        *,
+        run_id: int,
+        cluster_id: int,
+        cluster_label: int,
+        size: int,
+        label: str | None,
+        representative_article_id: int | None,
+    ) -> None:
+        node_id = make_cluster_node_id(run_id, cluster_id)
+        if node_id in node_map:
+            return
+
+        lane = run_id - start_run_id
+        rank = run_node_counts.get(run_id, 0)
+        run_node_counts[run_id] = rank + 1
+
+        radius = max(8, min(28, 8 + size ** 0.5))
+        weight = min(1.0, size / 100.0)
+
+        node_map[node_id] = GraphNodeResponse(
+            id=node_id,
+            type="cluster",
+            runId=run_id,
+            clusterId=cluster_id,
+            clusterLabel=cluster_label,
+            label=label or f"Cluster {cluster_id}",
+            size=size,
+            group=f"run:{run_id}",
+            positionHint=GraphPositionHintResponse(
+                lane=lane,
+                rank=rank,
+                x=lane * 420,
+                y=rank * 90,
+            ),
+            styleHints={
+                "radius": radius,
+                "weight": weight,
+                "colorKey": f"run:{run_id}",
+            },
+            meta={
+                "representativeArticleId": representative_article_id,
+            },
+        )
+
+    for row in rows:
+        add_node(
+            run_id=row["parent_run_id"],
+            cluster_id=row["parent_cluster_id"],
+            cluster_label=row["parent_label"],
+            size=row["parent_cluster_size"],
+            label=row["parent_representative_title"],
+            representative_article_id=row["parent_representative_article_id"],
+        )
+        add_node(
+            run_id=row["child_run_id"],
+            cluster_id=row["child_cluster_id"],
+            cluster_label=row["child_label"],
+            size=row["child_cluster_size"],
+            label=row["child_representative_title"],
+            representative_article_id=row["child_representative_article_id"],
+        )
+
+        source_id = make_cluster_node_id(row["parent_run_id"], row["parent_cluster_id"])
+        target_id = make_cluster_node_id(row["child_run_id"], row["child_cluster_id"])
+
+        width = max(1.0, min(6.0, 1.0 + row["score"] * 5.0))
+        opacity = max(0.25, min(1.0, row["score"]))
+
+        edges.append(
+            GraphEdgeResponse(
+                id=f"edge:{row['edge_id']}",
+                type="lineage",
+                edgeId=row["edge_id"],
+                source=source_id,
+                target=target_id,
+                label=f"score {row['score']:.2f} · overlap {row['article_overlap_count']}",
+                score=row["score"],
+                similarity=row["centroid_similarity"],
+                overlapRatio=row["article_overlap_ratio"],
+                overlapCount=row["article_overlap_count"],
+                styleHints={
+                    "width": width,
+                    "opacity": opacity,
+                },
+            )
+        )
+
+    if len(node_map) > max_nodes:
+        truncated = True
+        allowed_node_ids = set(list(node_map.keys())[:max_nodes])
+        node_map = {k: v for k, v in node_map.items() if k in allowed_node_ids}
+        edges = [
+            edge for edge in edges
+            if edge.source in allowed_node_ids and edge.target in allowed_node_ids
+        ]
+
+    groups = [
+        GraphGroupResponse(
+            id=f"run:{run_id}",
+            type="run",
+            label=f"Run {run_id}",
+            runId=run_id,
+            nodeCount=sum(1 for node in node_map.values() if node.runId == run_id),
+        )
+        for run_id in range(start_run_id, end_run_id + 1)
+    ]
+
+    return GraphResponse(
+        nodes=list(node_map.values()),
+        edges=edges,
+        groups=groups,
+        stats=GraphStatsResponse(
+            nodeCount=len(node_map),
+            edgeCount=len(edges),
+            truncated=truncated,
         ),
     )
