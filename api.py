@@ -237,6 +237,26 @@ class LineageEdgesResponse(BaseModel):
     page: PageMeta
 
 
+class RunSummaryResponse(BaseModel):
+    runId: int
+    startedAt: datetime
+    finishedAt: datetime | None
+    status: str
+    windowHours: int
+    minClusterSize: int
+    minSamples: int
+    articleCount: int
+    clusterCount: int
+    noiseCount: int
+    parentLineageEdgeCount: int
+    childLineageEdgeCount: int
+
+
+class RunsResponse(BaseModel):
+    items: list[RunSummaryResponse]
+    page: PageMeta
+
+
 def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
@@ -856,3 +876,100 @@ def delete_source(source_id: int, _: str = Depends(require_auth)):
         conn.close()
 
     return {"ok": True}
+
+
+@app.get("/v1/clustering/runs", response_model=RunsResponse)
+def list_clustering_runs(
+    status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    order: Literal["asc", "desc"] = Query("desc"),
+):
+    where_clauses = ["1=1"]
+    params: list[object] = []
+
+    if status is not None:
+        where_clauses.append("r.status = %s")
+        params.append(status)
+
+    where_sql = " AND ".join(where_clauses)
+    order_sql = "r.started_at ASC, r.id ASC" if order == "asc" else "r.started_at DESC, r.id DESC"
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM clustering_runs r
+                WHERE {where_sql}
+                """,
+                params,
+            )
+            total = cur.fetchone()["total"]
+
+            cur.execute(
+                f"""
+                WITH parent_counts AS (
+                    SELECT parent_run_id AS run_id, COUNT(*)::int AS edge_count
+                    FROM cluster_lineage
+                    GROUP BY parent_run_id
+                ),
+                child_counts AS (
+                    SELECT child_run_id AS run_id, COUNT(*)::int AS edge_count
+                    FROM cluster_lineage
+                    GROUP BY child_run_id
+                )
+                SELECT
+                    r.id,
+                    r.started_at,
+                    r.finished_at,
+                    r.status,
+                    r.window_hours,
+                    r.min_cluster_size,
+                    r.min_samples,
+                    r.article_count,
+                    r.cluster_count,
+                    r.noise_count,
+                    COALESCE(pc.edge_count, 0) AS parent_lineage_edge_count,
+                    COALESCE(cc.edge_count, 0) AS child_lineage_edge_count
+                FROM clustering_runs r
+                LEFT JOIN parent_counts pc ON pc.run_id = r.id
+                LEFT JOIN child_counts cc ON cc.run_id = r.id
+                WHERE {where_sql}
+                ORDER BY {order_sql}
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = [
+        RunSummaryResponse(
+            runId=row["id"],
+            startedAt=row["started_at"],
+            finishedAt=row["finished_at"],
+            status=row["status"],
+            windowHours=row["window_hours"],
+            minClusterSize=row["min_cluster_size"],
+            minSamples=row["min_samples"],
+            articleCount=row["article_count"],
+            clusterCount=row["cluster_count"],
+            noiseCount=row["noise_count"],
+            parentLineageEdgeCount=row["parent_lineage_edge_count"],
+            childLineageEdgeCount=row["child_lineage_edge_count"],
+        )
+        for row in rows
+    ]
+
+    return RunsResponse(
+        items=items,
+        page=PageMeta(
+            limit=limit,
+            offset=offset,
+            total=total,
+            hasNext=offset + limit < total,
+        ),
+    )
