@@ -519,6 +519,10 @@ def get_topic_detail(cluster_id: int):
 def run_collection():
     global run_logs
 
+    if collection_status.get("running"):
+            logger.warning("collection skipped: already running")
+            return
+
     run_logs = []
     collection_status["running"] = True
     run_started_at = time.perf_counter()
