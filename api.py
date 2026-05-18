@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
+from typing import Literal
+
 from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from collections import defaultdict
 from datetime import datetime
 import time
@@ -20,6 +22,7 @@ import numpy as np
 
 run_logs: list[str] = []
 logger = logging.getLogger("news.collector")
+
 
 class LogCapture(logging.Handler):
     def emit(self, record):
@@ -91,6 +94,7 @@ def init_sources_table():
     finally:
         conn.close()
 
+
 def init_articles_table():
     conn = get_conn()
     try:
@@ -110,6 +114,7 @@ def init_articles_table():
         conn.commit()
     finally:
         conn.close()
+
 
 def load_sources_from_db():
     from config import RSSSource, HTMLSource
@@ -201,6 +206,39 @@ class SourceCreate(BaseModel):
     name: str
     url: str
     type: str
+
+
+class PageMeta(BaseModel):
+    limit: int
+    offset: int
+    total: int
+    hasNext: bool
+
+
+class LineageEdgeResponse(BaseModel):
+    edgeId: int
+    parentRunId: int
+    childRunId: int
+    parentClusterId: int
+    childClusterId: int
+    sourceNodeId: str
+    targetNodeId: str
+    centroidSimilarity: float = Field(ge=-1.0, le=1.0)
+    articleOverlapRatio: float = Field(ge=0.0, le=1.0)
+    articleOverlapCount: int = Field(ge=0)
+    parentSize: int = Field(gt=0)
+    childSize: int = Field(gt=0)
+    score: float = Field(ge=0.0, le=1.0)
+    matchedAt: datetime
+
+
+class LineageEdgesResponse(BaseModel):
+    items: list[LineageEdgeResponse]
+    page: PageMeta
+
+
+def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
+    return f"run:{run_id}:cluster:{cluster_id}"
 
 
 def require_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -393,6 +431,143 @@ def get_sources_public():
     }
 
 
+@app.get("/api/v1/clustering/lineage/edges", response_model=LineageEdgesResponse)
+def list_lineage_edges(
+    parent_run_id: int | None = Query(None),
+    child_run_id: int | None = Query(None),
+    parent_cluster_id: int | None = Query(None),
+    child_cluster_id: int | None = Query(None),
+    min_score: float = Query(0.0, ge=0.0, le=1.0),
+    min_similarity: float | None = Query(None, ge=-1.0, le=1.0),
+    min_overlap_ratio: float | None = Query(None, ge=0.0, le=1.0),
+    min_overlap_count: int | None = Query(None, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sort: Literal[
+        "score_desc",
+        "score_asc",
+        "similarity_desc",
+        "overlap_desc",
+        "matched_at_desc",
+    ] = Query("score_desc"),
+):
+    where_clauses = ["score >= %s"]
+    params: list[object] = [min_score]
+
+    if parent_run_id is not None:
+        where_clauses.append("parent_run_id = %s")
+        params.append(parent_run_id)
+
+    if child_run_id is not None:
+        where_clauses.append("child_run_id = %s")
+        params.append(child_run_id)
+
+    if parent_cluster_id is not None:
+        where_clauses.append("parent_cluster_id = %s")
+        params.append(parent_cluster_id)
+
+    if child_cluster_id is not None:
+        where_clauses.append("child_cluster_id = %s")
+        params.append(child_cluster_id)
+
+    if min_similarity is not None:
+        where_clauses.append("centroid_similarity >= %s")
+        params.append(min_similarity)
+
+    if min_overlap_ratio is not None:
+        where_clauses.append("article_overlap_ratio >= %s")
+        params.append(min_overlap_ratio)
+
+    if min_overlap_count is not None:
+        where_clauses.append("article_overlap_count >= %s")
+        params.append(min_overlap_count)
+
+    order_sql = {
+        "score_desc": "score DESC, article_overlap_count DESC, id ASC",
+        "score_asc": "score ASC, id ASC",
+        "similarity_desc": "centroid_similarity DESC, score DESC, id ASC",
+        "overlap_desc": "article_overlap_count DESC, score DESC, id ASC",
+        "matched_at_desc": "matched_at DESC, id DESC",
+    }[sort]
+
+    where_sql = " AND ".join(where_clauses)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM cluster_lineage
+                WHERE {where_sql}
+                """,
+                params,
+            )
+            total = cur.fetchone()["total"]
+
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    parent_run_id,
+                    child_run_id,
+                    parent_cluster_id,
+                    child_cluster_id,
+                    centroid_similarity,
+                    article_overlap_ratio,
+                    article_overlap_count,
+                    parent_size,
+                    child_size,
+                    score,
+                    matched_at
+                FROM cluster_lineage
+                WHERE {where_sql}
+                ORDER BY {order_sql}
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = [
+        LineageEdgeResponse(
+            edgeId=row["id"],
+            parentRunId=row["parent_run_id"],
+            childRunId=row["child_run_id"],
+            parentClusterId=row["parent_cluster_id"],
+            childClusterId=row["child_cluster_id"],
+            sourceNodeId=make_cluster_node_id(
+                row["parent_run_id"],
+                row["parent_cluster_id"],
+            ),
+            targetNodeId=make_cluster_node_id(
+                row["child_run_id"],
+                row["child_cluster_id"],
+            ),
+            centroidSimilarity=row["centroid_similarity"],
+            articleOverlapRatio=row["article_overlap_ratio"],
+            articleOverlapCount=row["article_overlap_count"],
+            parentSize=row["parent_size"],
+            childSize=row["child_size"],
+            score=row["score"],
+            matchedAt=row["matched_at"],
+        )
+        for row in rows
+    ]
+
+    return LineageEdgesResponse(
+        items=items,
+        page=PageMeta(
+            limit=limit,
+            offset=offset,
+            total=total,
+            hasNext=offset + limit < total,
+        ),
+    )
+
+
 @app.get("/admin/stats")
 def get_stats(_: str = Depends(require_auth)):
     conn = get_conn()
@@ -520,8 +695,8 @@ def run_collection():
     global run_logs
 
     if collection_status.get("running"):
-            logger.warning("collection skipped: already running")
-            return
+        logger.warning("collection skipped: already running")
+        return
 
     run_logs = []
     collection_status["running"] = True
