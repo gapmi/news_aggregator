@@ -394,6 +394,28 @@ class GraphResponse(BaseModel):
     stats: GraphStatsResponse
 
 
+class ArticlePreviewResponse(BaseModel):
+    id: int
+    title: str | None
+    url: str | None
+    published: datetime | None
+    source: str | None
+
+
+class ClusterDetailResponse(BaseModel):
+    id: str
+    clusterId: int
+    runId: int
+    clusterLabel: int
+    size: int
+    representativeArticleId: int | None
+    representativeTitle: str | None
+    createdAt: datetime
+    incomingEdgeCount: int
+    outgoingEdgeCount: int
+    articles: list[ArticlePreviewResponse]
+
+
 def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
@@ -1556,4 +1578,92 @@ def get_graph_view(
             edgeCount=len(edges),
             truncated=truncated,
         ),
+    )
+
+
+@app.get("/v1/clustering/clusters/{cluster_id}", response_model=ClusterDetailResponse)
+def get_cluster_detail_v1(
+    cluster_id: int,
+    include_articles: bool = Query(False),
+    articles_limit: int = Query(30, ge=1, le=200),
+):
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    c.id,
+                    c.run_id,
+                    c.label,
+                    c.size,
+                    c.representative_article_id,
+                    c.representative_title,
+                    c.created_at,
+                    COALESCE(in_edges.edge_count, 0) AS incoming_edge_count,
+                    COALESCE(out_edges.edge_count, 0) AS outgoing_edge_count
+                FROM clusters c
+                LEFT JOIN (
+                    SELECT child_cluster_id AS cluster_id, COUNT(*)::int AS edge_count
+                    FROM cluster_lineage
+                    GROUP BY child_cluster_id
+                ) in_edges ON in_edges.cluster_id = c.id
+                LEFT JOIN (
+                    SELECT parent_cluster_id AS cluster_id, COUNT(*)::int AS edge_count
+                    FROM cluster_lineage
+                    GROUP BY parent_cluster_id
+                ) out_edges ON out_edges.cluster_id = c.id
+                WHERE c.id = %s
+                LIMIT 1
+                """,
+                (cluster_id,),
+            )
+            cluster = cur.fetchone()
+
+            if not cluster:
+                raise HTTPException(status_code=404, detail="Cluster not found")
+
+            articles = []
+            if include_articles:
+                cur.execute(
+                    """
+                    SELECT
+                        a.id,
+                        a.title,
+                        a.url,
+                        a.published,
+                        a.source
+                    FROM cluster_articles ca
+                    JOIN articles a ON a.id = ca.article_id
+                    WHERE ca.cluster_id = %s
+                    ORDER BY a.published DESC NULLS LAST, a.id DESC
+                    LIMIT %s
+                    """,
+                    (cluster_id, articles_limit),
+                )
+                articles = cur.fetchall()
+    finally:
+        conn.close()
+
+    return ClusterDetailResponse(
+        id=make_cluster_node_id(cluster["run_id"], cluster["id"]),
+        clusterId=cluster["id"],
+        runId=cluster["run_id"],
+        clusterLabel=cluster["label"],
+        size=cluster["size"],
+        representativeArticleId=cluster["representative_article_id"],
+        representativeTitle=cluster["representative_title"],
+        createdAt=cluster["created_at"],
+        incomingEdgeCount=cluster["incoming_edge_count"],
+        outgoingEdgeCount=cluster["outgoing_edge_count"],
+        articles=[
+            ArticlePreviewResponse(
+                id=row["id"],
+                title=row["title"],
+                url=row["url"],
+                published=row["published"],
+                source=row["source"],
+            )
+            for row in articles
+        ],
     )
