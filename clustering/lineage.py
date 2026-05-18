@@ -27,16 +27,16 @@ class RunPair:
 
 
 def get_conn():
-    password = os.getenv("DB_PASSWORD")
-    if not password:
-        raise RuntimeError("DB_PASSWORD is not set")
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return psycopg2.connect(database_url)
 
     return psycopg2.connect(
-        host=os.getenv("DB_HOST", "postgres_db"),
+        host=os.getenv("DB_HOST", "db"),
         port=os.getenv("DB_PORT", "5432"),
         dbname=os.getenv("DB_NAME", "news_db"),
         user=os.getenv("DB_USER", "postgres"),
-        password=password,
+        password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd"),
     )
 
 
