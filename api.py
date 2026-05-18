@@ -416,6 +416,11 @@ class ClusterDetailResponse(BaseModel):
     articles: list[ArticlePreviewResponse]
 
 
+class ClustersResponse(BaseModel):
+    items: list[ClusterDetailResponse]
+    page: PageMeta
+
+
 def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
@@ -1666,4 +1671,98 @@ def get_cluster_detail_v1(
             )
             for row in articles
         ],
+    )
+
+
+@app.get("/v1/clustering/clusters", response_model=ClustersResponse)
+def list_clusters_v1(
+    run_id: int | None = Query(None),
+    min_size: int | None = Query(None, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    where_clauses = ["1=1"]
+    params: list[object] = []
+
+    if run_id is not None:
+        where_clauses.append("c.run_id = %s")
+        params.append(run_id)
+
+    if min_size is not None:
+        where_clauses.append("c.size >= %s")
+        params.append(min_size)
+
+    where_sql = " AND ".join(where_clauses)
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM clusters c
+                WHERE {where_sql}
+                """,
+                params,
+            )
+            total = cur.fetchone()["total"]
+
+            cur.execute(
+                f"""
+                SELECT
+                    c.id,
+                    c.run_id,
+                    c.label,
+                    c.size,
+                    c.representative_article_id,
+                    c.representative_title,
+                    c.created_at,
+                    COALESCE(in_edges.edge_count, 0) AS incoming_edge_count,
+                    COALESCE(out_edges.edge_count, 0) AS outgoing_edge_count
+                FROM clusters c
+                LEFT JOIN (
+                    SELECT child_cluster_id AS cluster_id, COUNT(*)::int AS edge_count
+                    FROM cluster_lineage
+                    GROUP BY child_cluster_id
+                ) in_edges ON in_edges.cluster_id = c.id
+                LEFT JOIN (
+                    SELECT parent_cluster_id AS cluster_id, COUNT(*)::int AS edge_count
+                    FROM cluster_lineage
+                    GROUP BY parent_cluster_id
+                ) out_edges ON out_edges.cluster_id = c.id
+                WHERE {where_sql}
+                ORDER BY c.size DESC, c.id DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = [
+        ClusterDetailResponse(
+            id=make_cluster_node_id(row["run_id"], row["id"]),
+            clusterId=row["id"],
+            runId=row["run_id"],
+            clusterLabel=row["label"],
+            size=row["size"],
+            representativeArticleId=row["representative_article_id"],
+            representativeTitle=row["representative_title"],
+            createdAt=row["created_at"],
+            incomingEdgeCount=row["incoming_edge_count"],
+            outgoingEdgeCount=row["outgoing_edge_count"],
+            articles=[],
+        )
+        for row in rows
+    ]
+
+    return ClustersResponse(
+        items=items,
+        page=PageMeta(
+            limit=limit,
+            offset=offset,
+            total=total,
+            hasNext=offset + limit < total,
+        ),
     )
