@@ -248,6 +248,10 @@ class RunSummaryResponse(BaseModel):
     articleCount: int
     clusterCount: int
     noiseCount: int
+    largestClusterSize: int
+    largestClusterRatio: float
+    noiseRatio: float
+    maxPerSource: int | None
     parentLineageEdgeCount: int
     childLineageEdgeCount: int
 
@@ -1111,6 +1115,10 @@ def list_clustering_runs(
                     r.article_count,
                     r.cluster_count,
                     r.noise_count,
+                    COALESCE(r.largest_cluster_size, 0) AS largest_cluster_size,
+                    COALESCE(r.largest_cluster_ratio, 0.0) AS largest_cluster_ratio,
+                    COALESCE(r.noise_ratio, 0.0) AS noise_ratio,
+                    r.max_per_source,
                     COALESCE(pc.edge_count, 0) AS parent_lineage_edge_count,
                     COALESCE(cc.edge_count, 0) AS child_lineage_edge_count
                 FROM clustering_runs r
