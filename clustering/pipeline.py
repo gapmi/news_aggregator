@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 
 import psycopg2.extras
@@ -28,8 +29,57 @@ from clustering.lineage import (
     select_mutual_best,
 )
 
-
 log = logging.getLogger(__name__)
+
+
+def start_pipeline_run(conn, job_type: str, meta: dict | None = None) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO pipeline_runs (job_type, status, meta)
+            VALUES (%s, %s, %s)
+            RETURNING id
+            """,
+            (
+                job_type,
+                "running",
+                psycopg2.extras.Json(meta or {}),
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return row[0]
+
+
+def finish_pipeline_run(
+    conn,
+    pipeline_run_id: int,
+    status: str,
+    related_run_id: int | None = None,
+    error: str | None = None,
+    meta: dict | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE pipeline_runs
+            SET
+                status = %s,
+                finished_at = now(),
+                related_run_id = %s,
+                error = %s,
+                meta = COALESCE(meta, '{}'::jsonb) || %s::jsonb
+            WHERE id = %s
+            """,
+            (
+                status,
+                related_run_id,
+                error,
+                json.dumps(meta or {}),
+                pipeline_run_id,
+            ),
+        )
+    conn.commit()
 
 
 def parse_args():
@@ -160,36 +210,70 @@ def main():
     if abs((args.sim_weight + args.overlap_weight) - 1.0) > 1e-9:
         raise ValueError("sim-weight + overlap-weight must equal 1.0")
 
-    log.info(
-        "Starting clustering pipeline window_hours=%s limit=%s min_cluster_size=%s min_samples=%s",
-        args.window_hours,
-        args.limit,
-        args.min_cluster_size,
-        args.min_samples,
-    )
-
-    run_id = run_clustering(
-        window_hours=args.window_hours,
-        limit=args.limit,
-        min_cluster_size=args.min_cluster_size,
-        min_samples=args.min_samples,
-        min_valid_cluster_count=args.min_valid_cluster_count,
-        max_largest_cluster_ratio=args.max_largest_cluster_ratio,
-        max_per_source=args.max_per_source,
-        skip_quality_gate=args.skip_quality_gate,
-    )
-
-    if run_id is None:
-        log.info("Pipeline finished: clustering produced no run")
-        return
-
-    if args.skip_lineage:
-        log.info("Pipeline finished: run_id=%s lineage skipped", run_id)
-        return
-
     conn = get_conn()
+    pipeline_run_id = start_pipeline_run(
+        conn,
+        job_type="pipeline",
+        meta={
+            "window_hours": args.window_hours,
+            "limit": args.limit,
+            "min_cluster_size": args.min_cluster_size,
+            "min_samples": args.min_samples,
+            "max_per_source": args.max_per_source,
+            "min_similarity": args.min_similarity,
+            "min_overlap_ratio": args.min_overlap_ratio,
+            "sim_weight": args.sim_weight,
+            "overlap_weight": args.overlap_weight,
+            "skip_lineage": args.skip_lineage,
+            "dry_run_lineage": args.dry_run_lineage,
+            "min_valid_cluster_count": args.min_valid_cluster_count,
+            "max_largest_cluster_ratio": args.max_largest_cluster_ratio,
+            "skip_quality_gate": args.skip_quality_gate,
+        },
+    )
 
     try:
+        log.info(
+            "Starting clustering pipeline window_hours=%s limit=%s min_cluster_size=%s min_samples=%s",
+            args.window_hours,
+            args.limit,
+            args.min_cluster_size,
+            args.min_samples,
+        )
+
+        run_id = run_clustering(
+            window_hours=args.window_hours,
+            limit=args.limit,
+            min_cluster_size=args.min_cluster_size,
+            min_samples=args.min_samples,
+            min_valid_cluster_count=args.min_valid_cluster_count,
+            max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+            max_per_source=args.max_per_source,
+            skip_quality_gate=args.skip_quality_gate,
+        )
+
+        if run_id is None:
+            finish_pipeline_run(
+                conn,
+                pipeline_run_id,
+                status="no_run",
+                related_run_id=None,
+                meta={"lineage_inserted": 0},
+            )
+            log.info("Pipeline finished: clustering produced no run")
+            return
+
+        if args.skip_lineage:
+            finish_pipeline_run(
+                conn,
+                pipeline_run_id,
+                status="success",
+                related_run_id=run_id,
+                meta={"lineage_skipped": True, "lineage_inserted": 0},
+            )
+            log.info("Pipeline finished: run_id=%s lineage skipped", run_id)
+            return
+
         inserted = rebuild_lineage_for_new_run(
             conn=conn,
             current_run_id=run_id,
@@ -202,6 +286,13 @@ def main():
 
         if args.dry_run_lineage:
             conn.rollback()
+            finish_pipeline_run(
+                conn,
+                pipeline_run_id,
+                status="success",
+                related_run_id=run_id,
+                meta={"dry_run_lineage": True, "lineage_matches": inserted},
+            )
             log.info(
                 "Pipeline dry-run finished: run_id=%s lineage_matches=%s",
                 run_id,
@@ -209,15 +300,38 @@ def main():
             )
         else:
             conn.commit()
+            finish_pipeline_run(
+                conn,
+                pipeline_run_id,
+                status="success",
+                related_run_id=run_id,
+                meta={"lineage_inserted": inserted},
+            )
             log.info(
                 "Pipeline finished: run_id=%s lineage_inserted=%s",
                 run_id,
                 inserted,
             )
 
-    except Exception:
-        conn.rollback()
-        log.exception("Pipeline failed during lineage step for run_id=%s", run_id)
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        try:
+            finish_pipeline_run(
+                conn,
+                pipeline_run_id,
+                status="failed",
+                related_run_id=locals().get("run_id"),
+                error=str(e),
+                meta={"failed_step": "pipeline"},
+            )
+        except Exception:
+            log.exception("Failed to update pipeline_runs for pipeline_run_id=%s", pipeline_run_id)
+
+        log.exception("Pipeline failed")
         raise
 
     finally:
