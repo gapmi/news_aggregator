@@ -16,6 +16,9 @@ DEFAULT_LIMIT = 3000
 DEFAULT_MIN_CLUSTER_SIZE = 5
 DEFAULT_MIN_SAMPLES = 3
 
+DEFAULT_MIN_VALID_CLUSTER_COUNT = 10
+DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.50
+
 def get_conn():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
@@ -90,6 +93,44 @@ def load_batch(window_hours=DEFAULT_WINDOW_HOURS, limit=DEFAULT_LIMIT):
 
 def compute_centroid(cluster_vectors):
     return cluster_vectors.mean(axis=0).astype(np.float32)
+
+
+def validate_clustering_quality(
+    labels,
+    total_count: int,
+    min_valid_cluster_count: int = DEFAULT_MIN_VALID_CLUSTER_COUNT,
+    max_largest_cluster_ratio: float = DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
+) -> None:
+    counts = Counter(labels.tolist())
+
+    non_noise_counts = [
+        count
+        for label, count in counts.items()
+        if int(label) != -1
+    ]
+
+    cluster_count = len(non_noise_counts)
+    largest_cluster_size = max(non_noise_counts) if non_noise_counts else 0
+    largest_cluster_ratio = (
+        largest_cluster_size / total_count
+        if total_count > 0
+        else 0.0
+    )
+
+    if cluster_count < min_valid_cluster_count:
+        raise ValueError(
+            "clustering quality check failed: "
+            f"cluster_count={cluster_count} < {min_valid_cluster_count}"
+        )
+
+    if largest_cluster_ratio > max_largest_cluster_ratio:
+        raise ValueError(
+            "clustering quality check failed: "
+            f"largest_cluster_ratio={largest_cluster_ratio:.4f} "
+            f"> {max_largest_cluster_ratio:.4f}; "
+            f"largest_cluster_size={largest_cluster_size}; "
+            f"total_count={total_count}"
+        )
 
 
 def choose_representative(cluster_rows, cluster_vectors, centroid=None):
@@ -252,9 +293,16 @@ def run_clustering(
     noise_count = counts.get(-1, 0)
     cluster_count = len([k for k in counts.keys() if k != -1])
 
+
     print(f"label_counts={dict(sorted(counts.items()))}")
     print(f"noise_count={noise_count}")
     print(f"cluster_count={cluster_count}")
+
+
+    validate_clustering_quality(
+    labels=labels,
+    total_count=len(rows),
+    )
 
     conn = get_conn()
     run_id = None
