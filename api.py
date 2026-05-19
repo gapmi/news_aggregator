@@ -257,6 +257,22 @@ class RunsResponse(BaseModel):
     page: PageMeta
 
 
+class PipelineRunResponse(BaseModel):
+    id: int
+    jobType: str
+    status: str
+    startedAt: datetime
+    finishedAt: datetime | None
+    relatedRunId: int | None
+    error: str | None
+    meta: dict
+
+
+class PipelineRunsResponse(BaseModel):
+    items: list[PipelineRunResponse]
+    page: PageMeta
+
+
 class SankeyNodeResponse(BaseModel):
     id: str
     label: str | None
@@ -1766,3 +1782,88 @@ def list_clusters_v1(
             hasNext=offset + limit < total,
         ),
     )
+
+
+@app.get("/v1/clustering/pipeline/runs", response_model=PipelineRunsResponse)
+def get_pipeline_runs(
+    job_type: str | None = None,
+    status: str | None = None,
+    related_run_id: int | None = None,
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    filters = []
+    params: list = []
+
+    if job_type is not None:
+        filters.append("job_type = %s")
+        params.append(job_type)
+
+    if status is not None:
+        filters.append("status = %s")
+        params.append(status)
+
+    if related_run_id is not None:
+        filters.append("related_run_id = %s")
+        params.append(related_run_id)
+
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM pipeline_runs
+                {where_sql}
+                """,
+                params,
+            )
+            total = cur.fetchone()["total"]
+
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    job_type,
+                    status,
+                    started_at,
+                    finished_at,
+                    related_run_id,
+                    error,
+                    meta
+                FROM pipeline_runs
+                {where_sql}
+                ORDER BY started_at DESC, id DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            rows = cur.fetchall()
+
+        items = [
+            PipelineRunResponse(
+                id=row["id"],
+                jobType=row["job_type"],
+                status=row["status"],
+                startedAt=row["started_at"],
+                finishedAt=row["finished_at"],
+                relatedRunId=row["related_run_id"],
+                error=row["error"],
+                meta=row["meta"] or {},
+            )
+            for row in rows
+        ]
+
+        return PipelineRunsResponse(
+            items=items,
+            page=PageMeta(
+                limit=limit,
+                offset=offset,
+                total=total,
+                hasNext=offset + limit < total,
+            ),
+        )
+    finally:
+        conn.close()
