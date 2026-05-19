@@ -1146,6 +1146,10 @@ def list_clustering_runs(
             articleCount=row["article_count"],
             clusterCount=row["cluster_count"],
             noiseCount=row["noise_count"],
+            largestClusterSize=row["largest_cluster_size"],
+            largestClusterRatio=row["largest_cluster_ratio"],
+            noiseRatio=row["noise_ratio"],
+            maxPerSource=row["max_per_source"],
             parentLineageEdgeCount=row["parent_lineage_edge_count"],
             childLineageEdgeCount=row["child_lineage_edge_count"],
         )
