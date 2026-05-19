@@ -164,7 +164,6 @@ def main():
         return
 
     conn = get_conn()
-    conn.autocommit = False
 
     try:
         inserted = rebuild_lineage_for_new_run(
