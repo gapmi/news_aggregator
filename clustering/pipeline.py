@@ -8,6 +8,7 @@ import psycopg2.extras
 from clustering.offline import (
     DEFAULT_LIMIT,
     DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
+    DEFAULT_MAX_PER_SOURCE,
     DEFAULT_MIN_CLUSTER_SIZE,
     DEFAULT_MIN_SAMPLES,
     DEFAULT_MIN_VALID_CLUSTER_COUNT,
@@ -33,6 +34,8 @@ log = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser()
+
+    parser.add_argument("--max-per-source", type=int, default=DEFAULT_MAX_PER_SOURCE)
 
     parser.add_argument("--window-hours", type=int, default=DEFAULT_WINDOW_HOURS)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
@@ -172,6 +175,7 @@ def main():
         min_samples=args.min_samples,
         min_valid_cluster_count=args.min_valid_cluster_count,
         max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+        max_per_source=args.max_per_source,
         skip_quality_gate=args.skip_quality_gate,
     )
 

@@ -18,6 +18,7 @@ DEFAULT_MIN_SAMPLES = 3
 
 DEFAULT_MIN_VALID_CLUSTER_COUNT = 10
 DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.50
+DEFAULT_MAX_PER_SOURCE = 300
 
 def get_conn():
     db_url = os.getenv("DATABASE_URL")
@@ -44,6 +45,7 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--min-cluster-size", type=int, default=DEFAULT_MIN_CLUSTER_SIZE)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
+    parser.add_argument("--max-per-source", type=int, default=DEFAULT_MAX_PER_SOURCE)
     parser.add_argument(
         "--min-valid-cluster-count",
         type=int,
@@ -71,22 +73,59 @@ def parse_embedding(value):
     return np.array(value, dtype=np.float32)
 
 
-def load_batch(window_hours=DEFAULT_WINDOW_HOURS, limit=DEFAULT_LIMIT):
+def load_batch(
+    window_hours=DEFAULT_WINDOW_HOURS,
+    limit=DEFAULT_LIMIT,
+    max_per_source=DEFAULT_MAX_PER_SOURCE,
+):
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT id, title, embedding, published
-                FROM articles
-                WHERE embedding IS NOT NULL
-                  AND published IS NOT NULL
-                  AND published >= NOW() - (%s || ' hours')::interval
-                ORDER BY published DESC, id DESC
-                LIMIT %s
-                """,
-                (window_hours, limit),
-            )
+            if max_per_source and max_per_source > 0:
+                cur.execute(
+                    """
+                    WITH ranked AS (
+                        SELECT
+                            id,
+                            title,
+                            embedding,
+                            published,
+                            source,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY source
+                                ORDER BY published DESC, id DESC
+                            ) AS source_rank
+                        FROM articles
+                        WHERE embedding IS NOT NULL
+                          AND published IS NOT NULL
+                          AND published >= NOW() - (%s || ' hours')::interval
+                    ),
+                    balanced AS (
+                        SELECT id, title, embedding, published, source
+                        FROM ranked
+                        WHERE source_rank <= %s
+                    )
+                    SELECT id, title, embedding, published, source
+                    FROM balanced
+                    ORDER BY published DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (window_hours, max_per_source, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, title, embedding, published, source
+                    FROM articles
+                    WHERE embedding IS NOT NULL
+                      AND published IS NOT NULL
+                      AND published >= NOW() - (%s || ' hours')::interval
+                    ORDER BY published DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (window_hours, limit),
+                )
+
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -289,11 +328,16 @@ def run_clustering(
     limit=DEFAULT_LIMIT,
     min_cluster_size=DEFAULT_MIN_CLUSTER_SIZE,
     min_samples=DEFAULT_MIN_SAMPLES,
+    max_per_source=DEFAULT_MAX_PER_SOURCE,
     min_valid_cluster_count=DEFAULT_MIN_VALID_CLUSTER_COUNT,
     max_largest_cluster_ratio=DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
     skip_quality_gate=False,
 ) -> int | None:
-    rows, X = load_batch(window_hours=window_hours, limit=limit)
+    rows, X = load_batch(
+    window_hours=window_hours,
+    limit=limit,
+    max_per_source=max_per_source,
+)
 
     if rows is None:
         print("No rows found for clustering window")
@@ -380,6 +424,7 @@ def main():
         min_samples=args.min_samples,
         min_valid_cluster_count=args.min_valid_cluster_count,
         max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+        max_per_source=args.max_per_source,
         skip_quality_gate=args.skip_quality_gate,
     )
 
