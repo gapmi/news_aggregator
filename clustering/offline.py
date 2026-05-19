@@ -229,18 +229,17 @@ def update_run_failed(conn, run_id):
         )
 
 
-def main():
-    args = parse_args()
-
-    window_hours = args.window_hours
-    limit = args.limit
-    min_cluster_size = args.min_cluster_size
-    min_samples = args.min_samples
-
+def run_clustering(
+    window_hours=DEFAULT_WINDOW_HOURS,
+    limit=DEFAULT_LIMIT,
+    min_cluster_size=DEFAULT_MIN_CLUSTER_SIZE,
+    min_samples=DEFAULT_MIN_SAMPLES,
+) -> int | None:
     rows, X = load_batch(window_hours=window_hours, limit=limit)
+
     if rows is None:
         print("No rows found for clustering window")
-        return
+        return None
 
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
@@ -279,8 +278,11 @@ def main():
         )
 
         conn.commit()
+
         print(f"saved_run_id={run_id}")
         print(f"saved_cluster_count={saved_cluster_count}")
+
+        return run_id
 
     except Exception:
         conn.rollback()
@@ -293,8 +295,20 @@ def main():
                 conn.rollback()
 
         raise
+
     finally:
         conn.close()
+
+
+def main():
+    args = parse_args()
+
+    run_clustering(
+        window_hours=args.window_hours,
+        limit=args.limit,
+        min_cluster_size=args.min_cluster_size,
+        min_samples=args.min_samples,
+    )
 
 
 if __name__ == "__main__":
