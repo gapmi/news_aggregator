@@ -44,6 +44,20 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--min-cluster-size", type=int, default=DEFAULT_MIN_CLUSTER_SIZE)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
+    parser.add_argument(
+        "--min-valid-cluster-count",
+        type=int,
+        default=DEFAULT_MIN_VALID_CLUSTER_COUNT,
+    )
+    parser.add_argument(
+        "--max-largest-cluster-ratio",
+        type=float,
+        default=DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
+    )
+    parser.add_argument(
+        "--skip-quality-gate",
+        action="store_true",
+    )
     return parser.parse_args()
 
 
@@ -275,6 +289,9 @@ def run_clustering(
     limit=DEFAULT_LIMIT,
     min_cluster_size=DEFAULT_MIN_CLUSTER_SIZE,
     min_samples=DEFAULT_MIN_SAMPLES,
+    min_valid_cluster_count=DEFAULT_MIN_VALID_CLUSTER_COUNT,
+    max_largest_cluster_ratio=DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
+    skip_quality_gate=False,
 ) -> int | None:
     rows, X = load_batch(window_hours=window_hours, limit=limit)
 
@@ -299,10 +316,15 @@ def run_clustering(
     print(f"cluster_count={cluster_count}")
 
 
-    validate_clustering_quality(
-    labels=labels,
-    total_count=len(rows),
-    )
+    if skip_quality_gate:
+        print("quality_gate=skipped")
+    else:
+        validate_clustering_quality(
+            labels=labels,
+            total_count=len(rows),
+            min_valid_cluster_count=min_valid_cluster_count,
+            max_largest_cluster_ratio=max_largest_cluster_ratio,
+        )
 
     conn = get_conn()
     run_id = None
@@ -356,6 +378,9 @@ def main():
         limit=args.limit,
         min_cluster_size=args.min_cluster_size,
         min_samples=args.min_samples,
+        min_valid_cluster_count=args.min_valid_cluster_count,
+        max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+        skip_quality_gate=args.skip_quality_gate,
     )
 
 

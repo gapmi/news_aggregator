@@ -7,12 +7,15 @@ import psycopg2.extras
 
 from clustering.offline import (
     DEFAULT_LIMIT,
+    DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
     DEFAULT_MIN_CLUSTER_SIZE,
     DEFAULT_MIN_SAMPLES,
+    DEFAULT_MIN_VALID_CLUSTER_COUNT,
     DEFAULT_WINDOW_HOURS,
     get_conn,
     run_clustering,
 )
+
 from clustering.lineage import (
     DEFAULT_MIN_OVERLAP_RATIO,
     DEFAULT_MIN_SIMILARITY,
@@ -43,6 +46,20 @@ def parse_args():
 
     parser.add_argument("--skip-lineage", action="store_true")
     parser.add_argument("--dry-run-lineage", action="store_true")
+    parser.add_argument(
+        "--min-valid-cluster-count",
+        type=int,
+        default=DEFAULT_MIN_VALID_CLUSTER_COUNT,
+    )
+    parser.add_argument(
+        "--max-largest-cluster-ratio",
+        type=float,
+        default=DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
+    )
+    parser.add_argument(
+        "--skip-quality-gate",
+        action="store_true",
+    )
 
     return parser.parse_args()
 
@@ -153,6 +170,9 @@ def main():
         limit=args.limit,
         min_cluster_size=args.min_cluster_size,
         min_samples=args.min_samples,
+        min_valid_cluster_count=args.min_valid_cluster_count,
+        max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+        skip_quality_gate=args.skip_quality_gate,
     )
 
     if run_id is None:
