@@ -1915,14 +1915,15 @@ def list_clusters_v1(
             clusterId=row["id"],
             runId=row["run_id"],
             clusterLabel=row["label"],
-            size=row["size"],
-            representativeArticleId=row["representative_article_id"],
-            representativeTitle=resolve_cluster_display_name(
+            displayName=resolve_cluster_display_name(
                 cluster_id=row["id"],
                 tags=row["tags"],
                 name_title=row["name_title"],
                 name_short=row["name_short"],
             ),
+            size=row["size"],
+            representativeArticleId=row["representative_article_id"],
+            representativeTitle=row["representative_title"],
             createdAt=row["created_at"],
             incomingEdgeCount=row["incoming_edge_count"],
             outgoingEdgeCount=row["outgoing_edge_count"],
@@ -1945,7 +1946,6 @@ def list_clusters_v1(
             hasNext=offset + limit < total,
         ),
     )
-
 
 @app.get("/v1/clustering/pipeline/runs", response_model=PipelineRunsResponse)
 def get_pipeline_runs(
