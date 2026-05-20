@@ -427,6 +427,7 @@ class ClusterDetailResponse(BaseModel):
     clusterId: int
     runId: int
     clusterLabel: int
+    displayName: str | None = None
     size: int
     representativeArticleId: int | None
     representativeTitle: str | None
