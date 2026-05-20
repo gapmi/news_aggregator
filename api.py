@@ -450,6 +450,27 @@ def make_cluster_node_id(run_id: int, cluster_id: int) -> str:
     return f"run:{run_id}:cluster:{cluster_id}"
 
 
+def resolve_cluster_display_name(
+    *,
+    cluster_id: int,
+    tags: list[str] | None = None,
+    name_title: str | None = None,
+    name_short: str | None = None,
+) -> str:
+    if tags:
+        cleaned_tags = [tag.strip() for tag in tags if tag and tag.strip()]
+        if cleaned_tags:
+            return ", ".join(cleaned_tags)
+
+    if name_title and name_title.strip():
+        return name_title.strip()
+
+    if name_short and name_short.strip():
+        return name_short.strip()
+
+    return f"Cluster {cluster_id}"
+
+
 def require_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if credentials.credentials not in active_tokens:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -1233,13 +1254,15 @@ def get_sankey_view(
                     pc.representative_title AS parent_representative_title,
                     pcn.name_short AS parent_name_short,
                     pcn.name_title AS parent_name_title,
+                    pcn.tags AS parent_tags,
 
                     cc.label AS child_label,
                     cc.size AS child_cluster_size,
                     cc.representative_article_id AS child_representative_article_id,
                     cc.representative_title AS child_representative_title,
                     ccn.name_short AS child_name_short,
-                    ccn.name_title AS child_name_title
+                    ccn.name_title AS child_name_title,
+                    ccn.tags AS child_tags
                 FROM cluster_lineage cl
                 JOIN clusters pc ON pc.id = cl.parent_cluster_id
                 JOIN clusters cc ON cc.id = cl.child_cluster_id
@@ -1261,17 +1284,17 @@ def get_sankey_view(
         source_id = make_cluster_node_id(row["parent_run_id"], row["parent_cluster_id"])
         target_id = make_cluster_node_id(row["child_run_id"], row["child_cluster_id"])
 
-        parent_label_text = (
-            row["parent_name_title"]
-            or row["parent_name_short"]
-            or row["parent_representative_title"]
-            or f"Cluster {row['parent_cluster_id']}"
+        parent_label_text = resolve_cluster_display_name(
+            cluster_id=row["parent_cluster_id"],
+            tags=row["parent_tags"],
+            name_title=row["parent_name_title"],
+            name_short=row["parent_name_short"],
         )
-        child_label_text = (
-            row["child_name_title"]
-            or row["child_name_short"]
-            or row["child_representative_title"]
-            or f"Cluster {row['child_cluster_id']}"
+        child_label_text = resolve_cluster_display_name(
+            cluster_id=row["child_cluster_id"],
+            tags=row["child_tags"],
+            name_title=row["child_name_title"],
+            name_short=row["child_name_short"],
         )
 
         if source_id not in node_map:
@@ -1287,6 +1310,7 @@ def get_sankey_view(
                     "representativeArticleId": row["parent_representative_article_id"],
                     "nameShort": row["parent_name_short"],
                     "nameTitle": row["parent_name_title"],
+                    "tags": row["parent_tags"],
                 },
             )
 
@@ -1303,15 +1327,18 @@ def get_sankey_view(
                     "representativeArticleId": row["child_representative_article_id"],
                     "nameShort": row["child_name_short"],
                     "nameTitle": row["child_name_title"],
+                    "tags": row["child_tags"],
                 },
             )
 
-        value = {
-            "overlap_count": row["article_overlap_count"],
-            "score": row["score"],
-            "child_size": row["child_size"],
-            "parent_size": row["parent_size"],
-        }[link_value]
+        if link_value == "score":
+            value = float(row["score"])
+        elif link_value == "child_size":
+            value = float(row["child_size"])
+        elif link_value == "parent_size":
+            value = float(row["parent_size"])
+        else:
+            value = float(row["article_overlap_count"])
 
         links.append(
             SankeyLinkResponse(
@@ -1327,18 +1354,24 @@ def get_sankey_view(
             )
         )
 
+    run_ids = {
+        node.runId
+        for node in node_map.values()
+    }
+
     return SankeyResponse(
         nodes=list(node_map.values()),
         links=links,
         stats=SankeyStatsResponse(
             nodeCount=len(node_map),
             linkCount=len(links),
-            runCount=end_run_id - start_run_id + 1,
+            runCount=len(run_ids),
             truncated=False,
         ),
     )
 
-@app.get("/v1/clustering/views/euler/{edge_id}", response_model=EulerPairDetailResponse)
+
+@app.get("/v1/clustering/views/euler/pair/{edge_id}", response_model=EulerPairDetailResponse)
 def get_euler_pair_detail(edge_id: int):
     conn = get_conn()
     try:
@@ -1359,14 +1392,20 @@ def get_euler_pair_detail(edge_id: int):
                     cl.score,
 
                     pc.label AS parent_label,
+                    pc.size AS parent_cluster_size,
+                    pc.representative_article_id AS parent_representative_article_id,
                     pc.representative_title AS parent_representative_title,
                     pcn.name_short AS parent_name_short,
                     pcn.name_title AS parent_name_title,
+                    pcn.tags AS parent_tags,
 
                     cc.label AS child_label,
+                    cc.size AS child_cluster_size,
+                    cc.representative_article_id AS child_representative_article_id,
                     cc.representative_title AS child_representative_title,
                     ccn.name_short AS child_name_short,
-                    ccn.name_title AS child_name_title
+                    ccn.name_title AS child_name_title,
+                    ccn.tags AS child_tags
                 FROM cluster_lineage cl
                 JOIN clusters pc ON pc.id = cl.parent_cluster_id
                 JOIN clusters cc ON cc.id = cl.child_cluster_id
@@ -1384,26 +1423,26 @@ def get_euler_pair_detail(edge_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Lineage edge not found")
 
-    overlap_count = row["article_overlap_count"]
     parent_size = row["parent_size"]
     child_size = row["child_size"]
+    overlap_count = row["article_overlap_count"]
+
+    parent_coverage = overlap_count / parent_size if parent_size > 0 else 0.0
+    child_coverage = overlap_count / child_size if child_size > 0 else 0.0
     union_size = parent_size + child_size - overlap_count
+    jaccard = overlap_count / union_size if union_size > 0 else 0.0
 
-    parent_coverage = overlap_count / parent_size if parent_size else 0.0
-    child_coverage = overlap_count / child_size if child_size else 0.0
-    jaccard = overlap_count / union_size if union_size else 0.0
-
-    parent_title = (
-        row["parent_name_title"]
-        or row["parent_name_short"]
-        or row["parent_representative_title"]
-        or f"Cluster {row['parent_cluster_id']}"
+    parent_title = resolve_cluster_display_name(
+        cluster_id=row["parent_cluster_id"],
+        tags=row["parent_tags"],
+        name_title=row["parent_name_title"],
+        name_short=row["parent_name_short"],
     )
-    child_title = (
-        row["child_name_title"]
-        or row["child_name_short"]
-        or row["child_representative_title"]
-        or f"Cluster {row['child_cluster_id']}"
+    child_title = resolve_cluster_display_name(
+        cluster_id=row["child_cluster_id"],
+        tags=row["child_tags"],
+        name_title=row["child_name_title"],
+        name_short=row["child_name_short"],
     )
 
     return EulerPairDetailResponse(
@@ -1450,7 +1489,6 @@ def get_euler_pair_detail(edge_id: int):
             ),
         ),
     )
-
 
 @app.get("/v1/clustering/views/graph", response_model=GraphResponse)
 def get_graph_view(
@@ -1514,13 +1552,15 @@ def get_graph_view(
                     pc.representative_title AS parent_representative_title,
                     pcn.name_short AS parent_name_short,
                     pcn.name_title AS parent_name_title,
+                    pcn.tags AS parent_tags,
 
                     cc.label AS child_label,
                     cc.size AS child_cluster_size,
                     cc.representative_article_id AS child_representative_article_id,
                     cc.representative_title AS child_representative_title,
                     ccn.name_short AS child_name_short,
-                    ccn.name_title AS child_name_title
+                    ccn.name_title AS child_name_title,
+                    ccn.tags AS child_tags
                 FROM cluster_lineage cl
                 JOIN clusters pc ON pc.id = cl.parent_cluster_id
                 JOIN clusters cc ON cc.id = cl.child_cluster_id
@@ -1543,33 +1583,28 @@ def get_graph_view(
     edges: list[GraphEdgeResponse] = []
     run_node_counts: dict[int, int] = {}
 
-    def resolve_cluster_title(
-        name_title: str | None,
-        name_short: str | None,
-        representative_title: str | None,
-        cluster_id: int,
-    ) -> str:
-        return (
-            name_title
-            or name_short
-            or representative_title
-            or f"Cluster {cluster_id}"
-        )
-
     def add_node(
         *,
         run_id: int,
         cluster_id: int,
         cluster_label: int,
         size: int,
-        label: str,
         representative_article_id: int | None,
+        representative_title: str | None,
         name_short: str | None,
         name_title: str | None,
+        tags: list[str] | None,
     ) -> None:
         node_id = make_cluster_node_id(run_id, cluster_id)
         if node_id in node_map:
             return
+
+        display_name = resolve_cluster_display_name(
+            cluster_id=cluster_id,
+            tags=tags,
+            name_title=name_title,
+            name_short=name_short,
+        )
 
         lane = run_id - start_run_id
         rank = run_node_counts.get(run_id, 0)
@@ -1584,7 +1619,7 @@ def get_graph_view(
             runId=run_id,
             clusterId=cluster_id,
             clusterLabel=cluster_label,
-            label=label,
+            label=display_name,
             size=size,
             group=f"run:{run_id}",
             positionHint=GraphPositionHintResponse(
@@ -1600,34 +1635,25 @@ def get_graph_view(
             },
             meta={
                 "representativeArticleId": representative_article_id,
+                "representativeTitle": representative_title,
                 "nameShort": name_short,
                 "nameTitle": name_title,
+                "tags": tags,
+                "displayName": display_name,
             },
         )
 
     for row in rows:
-        parent_title = resolve_cluster_title(
-            row["parent_name_title"],
-            row["parent_name_short"],
-            row["parent_representative_title"],
-            row["parent_cluster_id"],
-        )
-        child_title = resolve_cluster_title(
-            row["child_name_title"],
-            row["child_name_short"],
-            row["child_representative_title"],
-            row["child_cluster_id"],
-        )
-
         add_node(
             run_id=row["parent_run_id"],
             cluster_id=row["parent_cluster_id"],
             cluster_label=row["parent_label"],
             size=row["parent_cluster_size"],
-            label=parent_title,
             representative_article_id=row["parent_representative_article_id"],
+            representative_title=row["parent_representative_title"],
             name_short=row["parent_name_short"],
             name_title=row["parent_name_title"],
+            tags=row["parent_tags"],
         )
 
         add_node(
@@ -1635,10 +1661,11 @@ def get_graph_view(
             cluster_id=row["child_cluster_id"],
             cluster_label=row["child_label"],
             size=row["child_cluster_size"],
-            label=child_title,
             representative_article_id=row["child_representative_article_id"],
+            representative_title=row["child_representative_title"],
             name_short=row["child_name_short"],
             name_title=row["child_name_title"],
+            tags=row["child_tags"],
         )
 
         source_id = make_cluster_node_id(row["parent_run_id"], row["parent_cluster_id"])
@@ -1669,7 +1696,11 @@ def get_graph_view(
     if len(node_map) > max_nodes:
         truncated = True
         allowed_node_ids = set(list(node_map.keys())[:max_nodes])
-        node_map = {k: v for k, v in node_map.items() if k in allowed_node_ids}
+        node_map = {
+            node_id: node
+            for node_id, node in node_map.items()
+            if node_id in allowed_node_ids
+        }
         edges = [
             edge
             for edge in edges
@@ -1697,7 +1728,6 @@ def get_graph_view(
             truncated=truncated,
         ),
     )
-
 
 @app.get("/v1/clustering/clusters/{cluster_id}", response_model=ClusterDetailResponse)
 def get_cluster_detail_v1(
@@ -1747,7 +1777,7 @@ def get_cluster_detail_v1(
             if not cluster:
                 raise HTTPException(status_code=404, detail="Cluster not found")
 
-            articles = []
+            articles: list[dict] = []
             if include_articles:
                 cur.execute(
                     """
@@ -1769,6 +1799,13 @@ def get_cluster_detail_v1(
     finally:
         conn.close()
 
+    display_name = resolve_cluster_display_name(
+        cluster_id=cluster["id"],
+        tags=cluster["tags"],
+        name_title=cluster["name_title"],
+        name_short=cluster["name_short"],
+    )
+
     return ClusterDetailResponse(
         id=make_cluster_node_id(cluster["run_id"], cluster["id"]),
         clusterId=cluster["id"],
@@ -1776,7 +1813,7 @@ def get_cluster_detail_v1(
         clusterLabel=cluster["label"],
         size=cluster["size"],
         representativeArticleId=cluster["representative_article_id"],
-        representativeTitle=cluster["representative_title"],
+        representativeTitle=display_name,
         createdAt=cluster["created_at"],
         incomingEdgeCount=cluster["incoming_edge_count"],
         outgoingEdgeCount=cluster["outgoing_edge_count"],
@@ -1878,7 +1915,12 @@ def list_clusters_v1(
             clusterLabel=row["label"],
             size=row["size"],
             representativeArticleId=row["representative_article_id"],
-            representativeTitle=row["representative_title"],
+            representativeTitle=resolve_cluster_display_name(
+                cluster_id=row["id"],
+                tags=row["tags"],
+                name_title=row["name_title"],
+                name_short=row["name_short"],
+            ),
             createdAt=row["created_at"],
             incomingEdgeCount=row["incoming_edge_count"],
             outgoingEdgeCount=row["outgoing_edge_count"],
