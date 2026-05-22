@@ -1,16 +1,16 @@
+from __future__ import annotations
+
 import argparse
-import json
+import logging
 import os
-import hdbscan
 
 import numpy as np
 import psycopg2
 import psycopg2.extras
-
-from collections import Counter, defaultdict
 from pgvector.psycopg2 import register_vector
-from psycopg2.extras import execute_values
-from cluster_naming import upsert_cluster_names_for_run
+from sentence_transformers import SentenceTransformer
+
+from clustering.cluster_naming import upsert_cluster_names_for_run
 
 DEFAULT_WINDOW_HOURS = 168
 DEFAULT_LIMIT = 3000
