@@ -149,14 +149,9 @@ class PGStorage:
                     page_size=50,
                 )
 
-            id_with_vectors = [
-                (article.id, vector)
-                for article, vector in zip(article_payload, vectors)
-            ]
-            self.save_scales_for_articles(id_with_vectors)
-
+            # scales temporarily disabled: only update embeddings
             self.conn.commit()
-            logger.warning("embeddings updated: %s", len(update_rows))
+            logger.warning("embeddings updated: ", len(update_rows))
 
         except Exception:
             logger.exception("embedding generation skipped due to error")
