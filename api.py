@@ -479,11 +479,18 @@ def require_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 
 def enrich_articles_with_scales_and_badges(cur, articles):
+    for article in articles:
+        article["semantic_scales"] = []
+        article["badges"] = []
+
     article_ids = [article["id"] for article in articles]
+    if not article_ids:
+        return
+
     scales_by_article = defaultdict(list)
     badges_by_article = defaultdict(list)
 
-    if article_ids:
+    try:
         scales_query = """
             SELECT article_id, scale_id, score, strength
             FROM article_scales
@@ -519,6 +526,8 @@ def enrich_articles_with_scales_and_badges(cur, articles):
                     "score": row["score"],
                 }
             )
+    except psycopg2.errors.UndefinedTable:
+        return
 
     for article in articles:
         article["semantic_scales"] = scales_by_article.get(article["id"], [])
