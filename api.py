@@ -1906,7 +1906,31 @@ def get_cluster_detail_v1(
     radial_map: ClusterRadialMapResponse | None = None
 
     if include_radial_map:
-        radial_map = None
+        radial_map = ClusterRadialMapResponse(
+            version=1,
+            ringMode="quantiles",
+            ringCount=0,
+            sectorMode="subclusters",
+            sectorCount=0,
+            stats=RadialStatsResponse(
+                articleCount=0,
+                coreCount=0,
+                midCount=0,
+                edgeCount=0,
+                outlierRiskCount=0,
+                questionableCount=0,
+                outlierCount=0,
+                subclusterCount=0,
+                unassignedSubclusterCount=0,
+                distanceMin=None,
+                distanceMax=None,
+                distanceMean=None,
+                distanceMedian=None,
+            ),
+            rings=[],
+            sectors=[],
+            points=[],
+        )
 
     return ClusterDetailResponse(
         id=make_cluster_node_id(cluster["run_id"], cluster["id"]),
