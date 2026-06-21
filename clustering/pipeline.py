@@ -18,6 +18,8 @@ from clustering.offline import (
     run_clustering,
 )
 
+from clustering.radial_map import build_and_save_radial_maps_for_run
+
 from clustering.lineage import (
     DEFAULT_MIN_OVERLAP_RATIO,
     DEFAULT_MIN_SIMILARITY,
@@ -284,6 +286,14 @@ def main():
             dry_run=args.dry_run_lineage,
         )
 
+        radial_result = build_and_save_radial_maps_for_run(conn, run_id)
+        log.info(
+            "Radial maps saved: run_id=%s clusters=%s points=%s",
+            run_id,
+            radial_result["cluster_count"],
+            radial_result["point_count"],
+        )
+
         if args.dry_run_lineage:
             conn.rollback()
             finish_pipeline_run(
@@ -291,7 +301,12 @@ def main():
                 pipeline_run_id,
                 status="success",
                 related_run_id=run_id,
-                meta={"dry_run_lineage": True, "lineage_matches": inserted},
+                meta={
+                    "dry_run_lineage": True,
+                    "lineage_matches": inserted,
+                    "radial_cluster_count": radial_result["cluster_count"],
+                    "radial_point_count": radial_result["point_count"],
+                },
             )
             log.info(
                 "Pipeline dry-run finished: run_id=%s lineage_matches=%s",
@@ -305,7 +320,11 @@ def main():
                 pipeline_run_id,
                 status="success",
                 related_run_id=run_id,
-                meta={"lineage_inserted": inserted},
+                meta={
+                    "lineage_inserted": inserted,
+                    "radial_cluster_count": radial_result["cluster_count"],
+                    "radial_point_count": radial_result["point_count"],
+                },
             )
             log.info(
                 "Pipeline finished: run_id=%s lineage_inserted=%s",
