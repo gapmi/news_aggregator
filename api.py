@@ -1825,7 +1825,208 @@ def get_graph_view(
         ),
     )
 
+
 @app.get("/v1/clustering/clusters/{cluster_id}", response_model=ClusterDetailResponse)
+
+
+def load_cluster_radial_map(conn, cluster_id: int) -> ClusterRadialMapResponse | None:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                id,
+                version,
+                ring_mode,
+                ring_count,
+                sector_mode,
+                sector_count,
+                article_count,
+                core_count,
+                mid_count,
+                edge_count,
+                outlier_risk_count,
+                questionable_count,
+                outlier_count,
+                subcluster_count,
+                unassigned_subcluster_count,
+                distance_min,
+                distance_max,
+                distance_mean,
+                distance_median
+            FROM cluster_radial_maps
+            WHERE cluster_id = %s
+            ORDER BY run_id DESC, id DESC
+            LIMIT 1
+            """,
+            (cluster_id,),
+        )
+        radial_map_row = cur.fetchone()
+
+        if not radial_map_row:
+            return None
+
+        radial_map_id = radial_map_row["id"]
+
+        cur.execute(
+            """
+            SELECT
+                ring_index,
+                ring_key,
+                label,
+                quantile_start,
+                quantile_end,
+                radius_inner,
+                radius_outer,
+                article_count
+            FROM cluster_radial_rings
+            WHERE radial_map_id = %s
+            ORDER BY ring_index
+            """,
+            (radial_map_id,),
+        )
+        ring_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT
+                sector_index,
+                sector_key,
+                label,
+                subcluster_id,
+                start_angle_deg,
+                end_angle_deg,
+                article_count,
+                color_key
+            FROM cluster_radial_sectors
+            WHERE radial_map_id = %s
+            ORDER BY sector_index
+            """,
+            (radial_map_id,),
+        )
+        sector_rows = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT
+                article_id,
+                article_index,
+                x,
+                y,
+                radius,
+                angle_deg,
+                ring_index,
+                ring_key,
+                sector_index,
+                sector_key,
+                subcluster_id,
+                subcluster_label,
+                distance_to_centroid,
+                distance_quantile,
+                membership_confidence,
+                outlier_score,
+                nearest_neighbor_distance,
+                nearest_alternative_cluster_id,
+                nearest_alternative_cluster_distance,
+                is_core,
+                is_edge,
+                is_outlier_risk,
+                is_outlier,
+                is_questionable
+            FROM cluster_radial_points
+            WHERE radial_map_id = %s
+            ORDER BY article_index
+            """,
+            (radial_map_id,),
+        )
+        point_rows = cur.fetchall()
+
+    rings = [
+        RadialRingResponse(
+            index=row["ring_index"],
+            key=row["ring_key"],
+            label=row["label"],
+            quantileStart=row["quantile_start"],
+            quantileEnd=row["quantile_end"],
+            radiusInner=row["radius_inner"],
+            radiusOuter=row["radius_outer"],
+            articleCount=row["article_count"],
+        )
+        for row in ring_rows
+    ]
+
+    sectors = [
+        RadialSectorResponse(
+            index=row["sector_index"],
+            key=row["sector_key"],
+            label=row["label"],
+            subclusterId=row["subcluster_id"],
+            startAngleDeg=row["start_angle_deg"],
+            endAngleDeg=row["end_angle_deg"],
+            articleCount=row["article_count"],
+            colorKey=row["color_key"],
+        )
+        for row in sector_rows
+    ]
+
+    points = [
+        RadialPointResponse(
+            articleId=row["article_id"],
+            articleIndex=row["article_index"],
+            x=row["x"],
+            y=row["y"],
+            radius=row["radius"],
+            angleDeg=row["angle_deg"],
+            ringIndex=row["ring_index"],
+            ringKey=row["ring_key"],
+            sectorIndex=row["sector_index"],
+            sectorKey=row["sector_key"],
+            subclusterId=row["subcluster_id"],
+            subclusterLabel=row["subcluster_label"],
+            distanceToCentroid=row["distance_to_centroid"],
+            distanceQuantile=row["distance_quantile"],
+            membershipConfidence=row["membership_confidence"],
+            outlierScore=row["outlier_score"],
+            nearestNeighborDistance=row["nearest_neighbor_distance"],
+            nearestAlternativeClusterId=row["nearest_alternative_cluster_id"],
+            nearestAlternativeClusterDistance=row["nearest_alternative_cluster_distance"],
+            isCore=row["is_core"],
+            isEdge=row["is_edge"],
+            isOutlierRisk=row["is_outlier_risk"],
+            isOutlier=row["is_outlier"],
+            isQuestionable=row["is_questionable"],
+        )
+        for row in point_rows
+    ]
+
+    stats = RadialStatsResponse(
+        articleCount=radial_map_row["article_count"],
+        coreCount=radial_map_row["core_count"],
+        midCount=radial_map_row["mid_count"],
+        edgeCount=radial_map_row["edge_count"],
+        outlierRiskCount=radial_map_row["outlier_risk_count"],
+        questionableCount=radial_map_row["questionable_count"],
+        outlierCount=radial_map_row["outlier_count"],
+        subclusterCount=radial_map_row["subcluster_count"],
+        unassignedSubclusterCount=radial_map_row["unassigned_subcluster_count"],
+        distanceMin=radial_map_row["distance_min"],
+        distanceMax=radial_map_row["distance_max"],
+        distanceMean=radial_map_row["distance_mean"],
+        distanceMedian=radial_map_row["distance_median"],
+    )
+
+    return ClusterRadialMapResponse(
+        version=radial_map_row["version"],
+        ringMode=radial_map_row["ring_mode"],
+        ringCount=radial_map_row["ring_count"],
+        sectorMode=radial_map_row["sector_mode"],
+        sectorCount=radial_map_row["sector_count"],
+        stats=stats,
+        rings=rings,
+        sectors=sectors,
+        points=points,
+    )
+
+
 def get_cluster_detail_v1(
     cluster_id: int,
     include_articles: bool = Query(False),
@@ -1906,31 +2107,33 @@ def get_cluster_detail_v1(
     radial_map: ClusterRadialMapResponse | None = None
 
     if include_radial_map:
-        radial_map = ClusterRadialMapResponse(
-            version=1,
-            ringMode="quantiles",
-            ringCount=0,
-            sectorMode="subclusters",
-            sectorCount=0,
-            stats=RadialStatsResponse(
-                articleCount=0,
-                coreCount=0,
-                midCount=0,
-                edgeCount=0,
-                outlierRiskCount=0,
-                questionableCount=0,
-                outlierCount=0,
-                subclusterCount=0,
-                unassignedSubclusterCount=0,
-                distanceMin=None,
-                distanceMax=None,
-                distanceMean=None,
-                distanceMedian=None,
-            ),
-            rings=[],
-            sectors=[],
-            points=[],
-        )
+        radial_map = load_cluster_radial_map(conn, cluster_id)
+        if radial_map is None:
+            radial_map = ClusterRadialMapResponse(
+                version=1,
+                ringMode="quantiles",
+                ringCount=0,
+                sectorMode="subclusters",
+                sectorCount=0,
+                stats=RadialStatsResponse(
+                    articleCount=0,
+                    coreCount=0,
+                    midCount=0,
+                    edgeCount=0,
+                    outlierRiskCount=0,
+                    questionableCount=0,
+                    outlierCount=0,
+                    subclusterCount=0,
+                    unassignedSubclusterCount=0,
+                    distanceMin=None,
+                    distanceMax=None,
+                    distanceMean=None,
+                    distanceMedian=None,
+                ),
+                rings=[],
+                sectors=[],
+                points=[],
+            )
 
     return ClusterDetailResponse(
         id=make_cluster_node_id(cluster["run_id"], cluster["id"]),
