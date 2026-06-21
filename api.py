@@ -422,6 +422,91 @@ class ArticlePreviewResponse(BaseModel):
     source: str | None
 
 
+class RadialRingResponse(BaseModel):
+    index: int
+    key: str
+    label: str
+    quantileStart: float
+    quantileEnd: float
+    radiusInner: float
+    radiusOuter: float
+    articleCount: int
+
+
+class RadialSectorResponse(BaseModel):
+    index: int
+    key: str
+    label: str
+    subclusterId: str | None = None
+    startAngleDeg: float
+    endAngleDeg: float
+    articleCount: int
+    colorKey: str | None = None
+
+
+class RadialPointResponse(BaseModel):
+    articleId: int
+    articleIndex: int
+    title: str | None
+    source: str | None
+    published: datetime | None
+    url: str | None
+
+    x: float
+    y: float
+    radius: float
+    angleDeg: float
+
+    ringIndex: int
+    ringKey: str
+    sectorIndex: int
+    sectorKey: str
+    subclusterId: str | None = None
+    subclusterLabel: str | None = None
+
+    distanceToCentroid: float
+    distanceQuantile: float | None = None
+    membershipConfidence: float | None = None
+    outlierScore: float | None = None
+    nearestNeighborDistance: float | None = None
+    nearestAlternativeClusterId: int | None = None
+    nearestAlternativeClusterDistance: float | None = None
+
+    isCore: bool = False
+    isEdge: bool = False
+    isOutlierRisk: bool = False
+    isOutlier: bool = False
+    isQuestionable: bool = False
+
+
+class RadialStatsResponse(BaseModel):
+    articleCount: int
+    coreCount: int
+    midCount: int
+    edgeCount: int
+    outlierRiskCount: int
+    questionableCount: int | None = None
+    outlierCount: int | None = None
+    subclusterCount: int
+    unassignedSubclusterCount: int = 0
+    distanceMin: float | None = None
+    distanceMax: float | None = None
+    distanceMean: float | None = None
+    distanceMedian: float | None = None
+
+
+class ClusterRadialMapResponse(BaseModel):
+    version: int = 1
+    ringMode: Literal["quantiles"]
+    ringCount: int
+    sectorMode: Literal["subclusters"]
+    sectorCount: int
+    stats: RadialStatsResponse
+    rings: list[RadialRingResponse]
+    sectors: list[RadialSectorResponse]
+    points: list[RadialPointResponse]
+
+
 class ClusterDetailResponse(BaseModel):
     id: str
     clusterId: int
@@ -440,6 +525,7 @@ class ClusterDetailResponse(BaseModel):
     tags: list[str] | None = None
     concepts: list[str] | None = None
     articles: list[ArticlePreviewResponse]
+    radialMap: ClusterRadialMapResponse | None = None
 
 
 class ClustersResponse(BaseModel):
@@ -1744,6 +1830,7 @@ def get_cluster_detail_v1(
     cluster_id: int,
     include_articles: bool = Query(False),
     articles_limit: int = Query(30, ge=1, le=200),
+    include_radial_map: bool = Query(False),
 ):
     conn = get_conn()
     try:
@@ -1816,6 +1903,11 @@ def get_cluster_detail_v1(
         name_short=cluster["name_short"],
     )
 
+    radial_map: ClusterRadialMapResponse | None = None
+
+    if include_radial_map:
+        radial_map = None
+
     return ClusterDetailResponse(
         id=make_cluster_node_id(cluster["run_id"], cluster["id"]),
         clusterId=cluster["id"],
@@ -1843,6 +1935,7 @@ def get_cluster_detail_v1(
             )
             for row in articles
         ],
+        radialMap=radial_map,
     )
 
 
