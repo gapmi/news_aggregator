@@ -1826,6 +1826,9 @@ def get_graph_view(
     )
 
 
+@app.get("/v1/clustering/clusters/{cluster_id}", response_model=ClusterDetailResponse)
+
+
 def load_cluster_radial_map(conn, cluster_id: int) -> ClusterRadialMapResponse | None:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -1905,38 +1908,33 @@ def load_cluster_radial_map(conn, cluster_id: int) -> ClusterRadialMapResponse |
         cur.execute(
             """
             SELECT
-                p.article_id,
-                p.article_index,
-                p.x,
-                p.y,
-                p.radius,
-                p.angle_deg,
-                p.ring_index,
-                p.ring_key,
-                p.sector_index,
-                p.sector_key,
-                p.subcluster_id,
-                p.subcluster_label,
-                p.distance_to_centroid,
-                p.distance_quantile,
-                p.membership_confidence,
-                p.outlier_score,
-                p.nearest_neighbor_distance,
-                p.nearest_alternative_cluster_id,
-                p.nearest_alternative_cluster_distance,
-                p.is_core,
-                p.is_edge,
-                p.is_outlier_risk,
-                p.is_outlier,
-                p.is_questionable,
-                a.title,
-                a.source,
-                a.published,
-                a.url
-            FROM cluster_radial_points p
-            JOIN articles a ON a.id = p.article_id
-            WHERE p.radial_map_id = %s
-            ORDER BY p.article_index
+                article_id,
+                article_index,
+                x,
+                y,
+                radius,
+                angle_deg,
+                ring_index,
+                ring_key,
+                sector_index,
+                sector_key,
+                subcluster_id,
+                subcluster_label,
+                distance_to_centroid,
+                distance_quantile,
+                membership_confidence,
+                outlier_score,
+                nearest_neighbor_distance,
+                nearest_alternative_cluster_id,
+                nearest_alternative_cluster_distance,
+                is_core,
+                is_edge,
+                is_outlier_risk,
+                is_outlier,
+                is_questionable
+            FROM cluster_radial_points
+            WHERE radial_map_id = %s
+            ORDER BY article_index
             """,
             (radial_map_id,),
         )
@@ -1974,10 +1972,6 @@ def load_cluster_radial_map(conn, cluster_id: int) -> ClusterRadialMapResponse |
         RadialPointResponse(
             articleId=row["article_id"],
             articleIndex=row["article_index"],
-            title=row["title"],
-            source=row["source"],
-            published=row["published"],
-            url=row["url"],
             x=row["x"],
             y=row["y"],
             radius=row["radius"],
@@ -2033,7 +2027,6 @@ def load_cluster_radial_map(conn, cluster_id: int) -> ClusterRadialMapResponse |
     )
 
 
-@app.get("/v1/clustering/clusters/{cluster_id}", response_model=ClusterDetailResponse)
 def get_cluster_detail_v1(
     cluster_id: int,
     include_articles: bool = Query(False),
@@ -2101,76 +2094,6 @@ def get_cluster_detail_v1(
                     (cluster_id, articles_limit),
                 )
                 articles = cur.fetchall()
-
-        # conn всё ещё открыт здесь
-
-        display_name = resolve_cluster_display_name(
-            cluster_id=cluster["id"],
-            tags=cluster["tags"],
-            name_title=cluster["name_title"],
-            name_short=cluster["name_short"],
-        )
-
-        radial_map: ClusterRadialMapResponse | None = None
-
-        if include_radial_map:
-            radial_map = load_cluster_radial_map(conn, cluster_id)
-            if radial_map is None:
-                radial_map = ClusterRadialMapResponse(
-                    version=1,
-                    ringMode="quantiles",
-                    ringCount=0,
-                    sectorMode="subclusters",
-                    sectorCount=0,
-                    stats=RadialStatsResponse(
-                        articleCount=0,
-                        coreCount=0,
-                        midCount=0,
-                        edgeCount=0,
-                        outlierRiskCount=0,
-                        questionableCount=0,
-                        outlierCount=0,
-                        subclusterCount=0,
-                        unassignedSubclusterCount=0,
-                        distanceMin=None,
-                        distanceMax=None,
-                        distanceMean=None,
-                        distanceMedian=None,
-                    ),
-                    rings=[],
-                    sectors=[],
-                    points=[],
-                )
-
-        return ClusterDetailResponse(
-            id=make_cluster_node_id(cluster["run_id"], cluster["id"]),
-            clusterId=cluster["id"],
-            runId=cluster["run_id"],
-            clusterLabel=cluster["label"],
-            displayName=display_name,
-            size=cluster["size"],
-            representativeArticleId=cluster["representative_article_id"],
-            representativeTitle=cluster["representative_title"],
-            createdAt=cluster["created_at"],
-            incomingEdgeCount=cluster["incoming_edge_count"],
-            outgoingEdgeCount=cluster["outgoing_edge_count"],
-            nameShort=cluster["name_short"],
-            nameTitle=cluster["name_title"],
-            languageCode=cluster["language_code"],
-            tags=cluster["tags"],
-            concepts=cluster["concepts"],
-            articles=[
-                ArticlePreviewResponse(
-                    id=row["id"],
-                    title=row["title"],
-                    url=row["url"],
-                    published=row["published"],
-                    source=row["source"],
-                )
-                for row in articles
-            ],
-            radialMap=radial_map,
-        )
     finally:
         conn.close()
 
