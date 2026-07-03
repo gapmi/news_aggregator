@@ -117,30 +117,84 @@ class PGStorage:
             for row in saved_rows
             if row["title"]
         ]
-
+        logger.warning("storage.save prepared rows: %s", len(saved_rows))
         self.conn.commit()
 
         if not payload:
             logger.warning("storage.save finished with empty payload")
             return
 
+        logger.warning("embedding step: start, payload_size=%s", len(payload))
+
         try:
             from processors.embeddings import ArticleText
+            logger.warning("embedding step: ArticleText imported")
+        except Exception:
+            logger.exception("embedding step failed: ArticleText import")
+            return
 
+        try:
             embedding_service = self._get_embedding_service()
+            logger.warning("embedding step: service initialized: %s", type(embedding_service).__name__)
+        except Exception:
+            logger.exception("embedding step failed: service init")
+            return
 
+        try:
             article_payload = [
                 ArticleText(id=row["id"], title=row["title"], content=None)
                 for row in payload
             ]
+            logger.warning(
+                "embedding step: payload prepared, article_payload_size=%s, sample_id=%s",
+                len(article_payload),
+                article_payload[0].id if article_payload else None,
+            )
+        except Exception:
+            logger.exception("embedding step failed: payload preparation")
+            return
 
+        try:
             vectors = embedding_service.encode_batch(article_payload, batch_size=8)
+            logger.warning(
+                "embedding step: encode ok, vectors_count=%s, first_vector_len=%s",
+                len(vectors) if vectors is not None else None,
+                len(vectors[0]) if vectors and vectors[0] is not None else None,
+            )
+        except Exception:
+            logger.exception("embedding encode failed")
+            self.conn.rollback()
+            return
+
+        try:
+            if len(vectors) != len(article_payload):
+                logger.warning(
+                    "embedding step: vectors/article mismatch, vectors=%s, payload=%s",
+                    len(vectors),
+                    len(article_payload),
+                )
 
             update_rows = [
                 (vector, article.id)
                 for article, vector in zip(article_payload, vectors)
+                if vector is not None
             ]
 
+            logger.warning(
+                "embedding step: update_rows prepared, count=%s, sample_vector_len=%s",
+                len(update_rows),
+                len(update_rows[0][0]) if update_rows and update_rows[0][0] is not None else None,
+            )
+        except Exception:
+            logger.exception("embedding step failed: update_rows preparation")
+            self.conn.rollback()
+            return
+
+        if not update_rows:
+            logger.warning("embedding step: no update_rows, skip DB update")
+            return
+
+        try:
             with self.conn.cursor() as cur:
                 execute_batch(
                     cur,
@@ -148,14 +202,19 @@ class PGStorage:
                     update_rows,
                     page_size=50,
                 )
-
-            # scales temporarily disabled: only update embeddings
-            self.conn.commit()
-            logger.warning("embeddings updated: ", len(update_rows))
-
+            logger.warning("embedding step: execute_batch done")
         except Exception:
-            logger.exception("embedding generation skipped due to error")
+            logger.exception("embedding db update failed")
             self.conn.rollback()
+            return
+
+        try:
+            self.conn.commit()
+            logger.warning("embeddings updated: %s", len(update_rows))
+        except Exception:
+            logger.exception("embedding commit failed")
+            self.conn.rollback()
+            return
 
     def save_scales_for_articles(self, article_vectors: list[tuple[int, list[float]]]):
         from processors.scales.service import ScaleEmbeddingService
