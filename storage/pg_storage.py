@@ -185,8 +185,17 @@ class PGStorage:
                 len(update_rows),
                 len(update_rows[0][0]) if update_rows and update_rows[0][0] is not None else None,
             )
-        except Exception:
-            logger.exception("embedding step failed: update_rows preparation")
+        except Exception as e:
+            import traceback
+
+            logger.exception("embedding generation skipped due to error")
+            try:
+                from api import run_logs
+                run_logs.append(f"ERROR in embeddings: {e}")
+                run_logs.extend(traceback.format_exc().splitlines()[-40:])
+            except Exception:
+                pass
+
             self.conn.rollback()
             return
 
