@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 from clustering.cluster_naming import upsert_cluster_names_for_run
+from clustering.cluster_subclustering import save_cluster_subclusters_for_run
 
 DEFAULT_WINDOW_HOURS = 168
 DEFAULT_LIMIT = 3000
@@ -432,6 +433,9 @@ def run_clustering(
         save_result = save_clusters_and_links(conn, run_id, rows, X, labels)
         saved_cluster_count = save_result["cluster_count"]
         saved_cluster_ids = save_result["cluster_ids"]
+
+        subcluster_result = save_cluster_subclusters_for_run(conn, run_id)
+        print(f"subcluster_result={subcluster_result}")
 
         named_cluster_count = upsert_cluster_names_for_run(conn, run_id)
         print(f"named_cluster_count={named_cluster_count}")
