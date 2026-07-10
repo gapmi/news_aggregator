@@ -145,7 +145,7 @@ def save_cluster_subclusters_for_run(
 
         inserted = []
         with conn.cursor() as cur:
-            execute_values(
+            inserted = execute_values(
                 cur,
                 """
                 INSERT INTO cluster_subclusters (
@@ -174,6 +174,7 @@ def save_cluster_subclusters_for_run(
                     )
                     for row in local_subcluster_payloads
                 ],
+                fetch=True,
             )
             inserted = cur.fetchall()
 
