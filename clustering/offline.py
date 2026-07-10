@@ -73,6 +73,12 @@ def parse_embedding(value):
     if isinstance(value, str):
         return np.array(json.loads(value), dtype=np.float32)
 
+    if hasattr(value, "to_numpy"):
+        return value.to_numpy().astype(np.float32)
+
+    if hasattr(value, "to_list"):
+        return np.array(value.to_list(), dtype=np.float32)
+
     return np.array(value, dtype=np.float32)
 
 
