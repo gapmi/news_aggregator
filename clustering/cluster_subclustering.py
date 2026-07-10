@@ -176,6 +176,7 @@ def save_cluster_subclusters_for_run(
                 ],
                 fetch=True,
             )
+            print(f"inserted_subclusters={inserted}")
             inserted = cur.fetchall()
 
         subcluster_id_by_label = {int(label): int(subcluster_id) for subcluster_id, _cluster_id, label in inserted}
