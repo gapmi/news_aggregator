@@ -49,7 +49,7 @@ def _load_cluster_articles_for_run(conn, run_id: int) -> dict[int, list[dict]]:
             {
                 "article_id": int(row["article_id"]),
                 "title": row["title"],
-                "embedding": np.array(row["embedding"], dtype=np.float32),
+                "embedding": row["embedding"].to_numpy().astype(np.float32) if hasattr(row["embedding"], "to_numpy") else np.array(row["embedding"], dtype=np.float32),
             }
         )
     return grouped
