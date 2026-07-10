@@ -180,6 +180,7 @@ def save_cluster_subclusters_for_run(
             inserted = cur.fetchall()
 
         subcluster_id_by_label = {int(returned_label): int(subcluster_id) for subcluster_id, _cluster_id, returned_label in inserted}
+        print(f"subcluster_id_by_label={subcluster_id_by_label}")
         
         for payload in local_subcluster_payloads:
             label = payload["label"]
