@@ -215,14 +215,11 @@ class PageMeta(BaseModel):
     hasNext: bool
 
 
-class LineageEdgeResponse(BaseModel):
+class ClusterLineageMetaResponse(BaseModel):
     edgeId: int
     parentRunId: int
-    childRunId: int
     parentClusterId: int
-    childClusterId: int
     sourceNodeId: str
-    targetNodeId: str
     centroidSimilarity: float = Field(ge=-1.0, le=1.0)
     articleOverlapRatio: float = Field(ge=0.0, le=1.0)
     articleOverlapCount: int = Field(ge=0)
@@ -232,8 +229,21 @@ class LineageEdgeResponse(BaseModel):
     matchedAt: datetime
 
 
+class LineageClusterResponse(BaseModel):
+    childRunId: int
+    childClusterId: int
+    childClusterLabel: int
+    childSize: int
+    representativeArticleId: int | None
+    representativeTitle: str | None
+    createdAt: datetime
+    targetNodeId: str
+    isNew: bool
+    lineage: ClusterLineageMetaResponse | None = None
+
+
 class LineageEdgesResponse(BaseModel):
-    items: list[LineageEdgeResponse]
+    items: list[LineageClusterResponse]
     page: PageMeta
 
 
@@ -767,56 +777,78 @@ def list_lineage_edges(
     min_similarity: float | None = Query(None, ge=-1.0, le=1.0),
     min_overlap_ratio: float | None = Query(None, ge=0.0, le=1.0),
     min_overlap_count: int | None = Query(None, ge=0),
+    include_new: bool = Query(True),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort: Literal[
+        "size_desc",
+        "size_asc",
+        "created_at_desc",
         "score_desc",
         "score_asc",
         "similarity_desc",
         "overlap_desc",
-        "matched_at_desc",
-    ] = Query("score_desc"),
+    ] = Query("size_desc"),
 ):
-    where_clauses = ["score >= %s"]
-    params: list[object] = [min_score]
-
-    if parent_run_id is not None:
-        where_clauses.append("parent_run_id = %s")
-        params.append(parent_run_id)
+    cluster_where_clauses = ["1=1"]
+    cluster_params: list[object] = []
 
     if child_run_id is not None:
-        where_clauses.append("child_run_id = %s")
-        params.append(child_run_id)
-
-    if parent_cluster_id is not None:
-        where_clauses.append("parent_cluster_id = %s")
-        params.append(parent_cluster_id)
+        cluster_where_clauses.append("c.run_id = %s")
+        cluster_params.append(child_run_id)
 
     if child_cluster_id is not None:
-        where_clauses.append("child_cluster_id = %s")
-        params.append(child_cluster_id)
+        cluster_where_clauses.append("c.id = %s")
+        cluster_params.append(child_cluster_id)
+
+    lineage_join_filters = ["cl.child_run_id = c.run_id", "cl.child_cluster_id = c.id"]
+    lineage_filter_params: list[object] = []
+
+    if parent_run_id is not None:
+        lineage_join_filters.append("cl.parent_run_id = %s")
+        lineage_filter_params.append(parent_run_id)
+
+    if parent_cluster_id is not None:
+        lineage_join_filters.append("cl.parent_cluster_id = %s")
+        lineage_filter_params.append(parent_cluster_id)
+
+    if min_score > 0.0:
+        lineage_join_filters.append("cl.score >= %s")
+        lineage_filter_params.append(min_score)
 
     if min_similarity is not None:
-        where_clauses.append("centroid_similarity >= %s")
-        params.append(min_similarity)
+        lineage_join_filters.append("cl.centroid_similarity >= %s")
+        lineage_filter_params.append(min_similarity)
 
     if min_overlap_ratio is not None:
-        where_clauses.append("article_overlap_ratio >= %s")
-        params.append(min_overlap_ratio)
+        lineage_join_filters.append("cl.article_overlap_ratio >= %s")
+        lineage_filter_params.append(min_overlap_ratio)
 
     if min_overlap_count is not None:
-        where_clauses.append("article_overlap_count >= %s")
-        params.append(min_overlap_count)
+        lineage_join_filters.append("cl.article_overlap_count >= %s")
+        lineage_filter_params.append(min_overlap_count)
+
+    if not include_new:
+        cluster_where_clauses.append("cl.id IS NOT NULL")
+
+    cluster_where_sql = " AND ".join(cluster_where_clauses)
+    lineage_join_sql = " AND ".join(lineage_join_filters)
 
     order_sql = {
-        "score_desc": "score DESC, article_overlap_count DESC, id ASC",
-        "score_asc": "score ASC, id ASC",
-        "similarity_desc": "centroid_similarity DESC, score DESC, id ASC",
-        "overlap_desc": "article_overlap_count DESC, score DESC, id ASC",
-        "matched_at_desc": "matched_at DESC, id DESC",
+        "size_desc": "c.size DESC, c.id ASC",
+        "size_asc": "c.size ASC, c.id ASC",
+        "created_at_desc": "c.created_at DESC, c.id DESC",
+        "score_desc": "cl.score DESC NULLS LAST, c.size DESC, c.id ASC",
+        "score_asc": "cl.score ASC NULLS LAST, c.size DESC, c.id ASC",
+        "similarity_desc": "cl.centroid_similarity DESC NULLS LAST, c.size DESC, c.id ASC",
+        "overlap_desc": "cl.article_overlap_count DESC NULLS LAST, c.size DESC, c.id ASC",
     }[sort]
 
-    where_sql = " AND ".join(where_clauses)
+    join_sql = f"""
+        FROM clusters c
+        LEFT JOIN cluster_lineage cl
+          ON {lineage_join_sql}
+    """
 
     conn = get_conn()
     try:
@@ -824,64 +856,83 @@ def list_lineage_edges(
             cur.execute(
                 f"""
                 SELECT COUNT(*) AS total
-                FROM cluster_lineage
-                WHERE {where_sql}
+                {join_sql}
+                WHERE {cluster_where_sql}
                 """,
-                params,
+                cluster_params + lineage_filter_params,
             )
             total = cur.fetchone()["total"]
 
             cur.execute(
                 f"""
                 SELECT
-                    id,
-                    parent_run_id,
-                    child_run_id,
-                    parent_cluster_id,
-                    child_cluster_id,
-                    centroid_similarity,
-                    article_overlap_ratio,
-                    article_overlap_count,
-                    parent_size,
-                    child_size,
-                    score,
-                    matched_at
-                FROM cluster_lineage
-                WHERE {where_sql}
+                    c.run_id AS child_run_id,
+                    c.id AS child_cluster_id,
+                    c.label AS child_cluster_label,
+                    c.size AS child_size,
+                    c.representative_article_id,
+                    c.representative_title,
+                    c.created_at,
+
+                    cl.id AS edge_id,
+                    cl.parent_run_id,
+                    cl.parent_cluster_id,
+                    cl.centroid_similarity,
+                    cl.article_overlap_ratio,
+                    cl.article_overlap_count,
+                    cl.parent_size,
+                    cl.child_size AS lineage_child_size,
+                    cl.score,
+                    cl.matched_at
+                {join_sql}
+                WHERE {cluster_where_sql}
                 ORDER BY {order_sql}
                 LIMIT %s OFFSET %s
                 """,
-                params + [limit, offset],
+                cluster_params + lineage_filter_params + [limit, offset],
             )
             rows = cur.fetchall()
     finally:
         conn.close()
 
-    items = [
-        LineageEdgeResponse(
-            edgeId=row["id"],
-            parentRunId=row["parent_run_id"],
-            childRunId=row["child_run_id"],
-            parentClusterId=row["parent_cluster_id"],
-            childClusterId=row["child_cluster_id"],
-            sourceNodeId=make_cluster_node_id(
-                row["parent_run_id"],
-                row["parent_cluster_id"],
-            ),
-            targetNodeId=make_cluster_node_id(
-                row["child_run_id"],
-                row["child_cluster_id"],
-            ),
-            centroidSimilarity=row["centroid_similarity"],
-            articleOverlapRatio=row["article_overlap_ratio"],
-            articleOverlapCount=row["article_overlap_count"],
-            parentSize=row["parent_size"],
-            childSize=row["child_size"],
-            score=row["score"],
-            matchedAt=row["matched_at"],
+    items = []
+    for row in rows:
+        lineage = None
+        if row["edge_id"] is not None:
+            lineage = ClusterLineageMetaResponse(
+                edgeId=row["edge_id"],
+                parentRunId=row["parent_run_id"],
+                parentClusterId=row["parent_cluster_id"],
+                sourceNodeId=make_cluster_node_id(
+                    row["parent_run_id"],
+                    row["parent_cluster_id"],
+                ),
+                centroidSimilarity=row["centroid_similarity"],
+                articleOverlapRatio=row["article_overlap_ratio"],
+                articleOverlapCount=row["article_overlap_count"],
+                parentSize=row["parent_size"],
+                childSize=row["lineage_child_size"],
+                score=row["score"],
+                matchedAt=row["matched_at"],
+            )
+
+        items.append(
+            LineageClusterResponse(
+                childRunId=row["child_run_id"],
+                childClusterId=row["child_cluster_id"],
+                childClusterLabel=row["child_cluster_label"],
+                childSize=row["child_size"],
+                representativeArticleId=row["representative_article_id"],
+                representativeTitle=row["representative_title"],
+                createdAt=row["created_at"],
+                targetNodeId=make_cluster_node_id(
+                    row["child_run_id"],
+                    row["child_cluster_id"],
+                ),
+                isNew=row["edge_id"] is None,
+                lineage=lineage,
+            )
         )
-        for row in rows
-    ]
 
     return LineageEdgesResponse(
         items=items,
