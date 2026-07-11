@@ -124,6 +124,21 @@ def _build_point_rows(
         for idx, row in enumerate(sorted_subclusters)
     }
 
+    sector_bounds_by_label: dict[int, tuple[float, float]] = {}
+    if sorted_subclusters:
+        total = sum(int(row["size"]) for row in sorted_subclusters)
+        start = 0.0
+
+        for idx, row in enumerate(sorted_subclusters):
+            label_int = int(row["label"])
+            count = int(row["size"])
+            span = 360.0 * count / total if total > 0 else 0.0
+            end = 360.0 if idx == len(sorted_subclusters) - 1 else start + span
+            sector_bounds_by_label[label_int] = (start, end)
+            start = end
+    else:
+        sector_bounds_by_label[0] = (0.0, 360.0)
+
     vectors = np.vstack([row.embedding for row in article_rows]).astype(np.float32)
     distances = np.linalg.norm(vectors - centroid, axis=1).astype(np.float32)
     radius_values = _normalize_distances(distances)
@@ -137,6 +152,20 @@ def _build_point_rows(
         for rank, idx in enumerate(order):
             distance_quantiles[idx] = rank / (len(article_rows) - 1)
 
+    articles_by_sector_label: dict[int, list[int]] = {}
+    for idx, article in enumerate(article_rows):
+        assignment = assignments.get(article.article_id)
+        if assignment is not None:
+            label_int = int(assignment["subcluster_label_int"])
+        else:
+            label_int = 0
+        articles_by_sector_label.setdefault(label_int, []).append(idx)
+
+    position_in_sector: dict[int, tuple[int, int]] = {}
+    for label_int, indices in articles_by_sector_label.items():
+        for pos, article_idx in enumerate(indices):
+            position_in_sector[article_idx] = (pos, len(indices))
+
     point_rows: list[tuple] = []
 
     core_count = 0
@@ -147,13 +176,6 @@ def _build_point_rows(
     n = len(article_rows)
 
     for idx, article in enumerate(article_rows):
-        angle_deg = 0.0 if n == 1 else (360.0 * idx / n)
-        angle_rad = math.radians(angle_deg)
-
-        radius = float(radius_values[idx])
-        x = float(radius * math.cos(angle_rad))
-        y = float(radius * math.sin(angle_rad))
-
         distance_to_centroid = float(distances[idx])
         distance_quantile = float(distance_quantiles[idx])
 
@@ -186,12 +208,29 @@ def _build_point_rows(
             membership_confidence = assignment["probability"]
             outlier_score = assignment["outlier_score"]
         else:
+            label_int = 0
             sector_index = 0
             sector_key = "subcluster_0"
             subcluster_id = None
             subcluster_label = None
             membership_confidence = None
             outlier_score = None
+
+        sector_start, sector_end = sector_bounds_by_label.get(label_int, (0.0, 360.0))
+        sector_span = max(0.0, sector_end - sector_start)
+
+        pos, total_in_sector = position_in_sector.get(idx, (0, 1))
+
+        if total_in_sector <= 1:
+            angle_deg = sector_start + sector_span / 2.0
+        else:
+            angle_deg = sector_start + sector_span * ((pos + 0.5) / total_in_sector)
+
+        angle_rad = math.radians(angle_deg)
+
+        radius = float(radius_values[idx])
+        x = float(radius * math.cos(angle_rad))
+        y = float(radius * math.sin(angle_rad))
 
         point_rows.append(
             (
