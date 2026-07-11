@@ -30,7 +30,26 @@ class ClusterArticleEmbedding:
 def _to_numpy_vector(value) -> np.ndarray | None:
     if value is None:
         return None
-    return np.array(value, dtype=np.float32)
+
+    if isinstance(value, np.ndarray):
+        return value.astype(np.float32, copy=False)
+
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value, dtype=np.float32)
+
+    if hasattr(value, "tolist"):
+        return np.asarray(value.tolist(), dtype=np.float32)
+
+    if hasattr(value, "to_list"):
+        return np.asarray(value.to_list(), dtype=np.float32)
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            parts = [p.strip() for p in stripped[1:-1].split(",") if p.strip()]
+            return np.asarray([float(p) for p in parts], dtype=np.float32)
+
+    return np.asarray(list(value), dtype=np.float32)
 
 
 def _normalize_distances(distances: np.ndarray) -> np.ndarray:
