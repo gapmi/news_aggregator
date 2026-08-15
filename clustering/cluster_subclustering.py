@@ -7,10 +7,26 @@ import numpy as np
 import psycopg2.extras
 from psycopg2.extras import execute_values
 
-
 MIN_SUBCLUSTER_PARENT_SIZE = 10
-SUBCLUSTER_MIN_CLUSTER_SIZE = 3
-SUBCLUSTER_MIN_SAMPLES = 2
+SUBCLUSTER_MIN_CLUSTER_SIZE = 4
+SUBCLUSTER_MIN_SAMPLES = 3
+SUBCLUSTER_SELECTION_METHOD = "leaf"
+SUBCLUSTER_MIN_PROBABILITY = 0.35
+SUBCLUSTER_MAX_DISTANCE_QUANTILE = 0.90
+DEFAULT_TRIGGER_PARENT_SIZE = 120
+DEFAULT_TRIGGER_PARENT_RATIO = 0.10
+
+
+def _to_numpy_vector(value) -> np.ndarray | None:
+    if value is None:
+        return None
+    if hasattr(value, "to_numpy"):
+        return value.to_numpy().astype(np.float32)
+    if hasattr(value, "tolist"):
+        return np.asarray(value.tolist(), dtype=np.float32)
+    if hasattr(value, "to_list"):
+        return np.asarray(value.to_list(), dtype=np.float32)
+    return np.asarray(value, dtype=np.float32)
 
 
 def _compute_centroid(vectors: np.ndarray) -> np.ndarray:
@@ -29,6 +45,7 @@ def _load_cluster_articles_for_run(conn, run_id: int) -> dict[int, list[dict]]:
             """
             SELECT
                 c.id AS cluster_id,
+                c.size AS cluster_size,
                 a.id AS article_id,
                 a.title,
                 a.embedding
@@ -45,11 +62,15 @@ def _load_cluster_articles_for_run(conn, run_id: int) -> dict[int, list[dict]]:
 
     grouped: dict[int, list[dict]] = defaultdict(list)
     for row in rows:
+        embedding = _to_numpy_vector(row["embedding"])
+        if embedding is None:
+            continue
         grouped[int(row["cluster_id"])].append(
             {
+                "cluster_size": int(row["cluster_size"]),
                 "article_id": int(row["article_id"]),
                 "title": row["title"],
-                "embedding": row["embedding"].to_numpy().astype(np.float32) if hasattr(row["embedding"], "to_numpy") else np.array(row["embedding"], dtype=np.float32),
+                "embedding": embedding,
             }
         )
     return grouped
@@ -66,17 +87,35 @@ def _delete_existing_subclusters_for_run(conn, run_id: int) -> None:
         )
 
 
+def _should_subcluster_parent(
+    parent_size: int,
+    total_article_count: int,
+    min_parent_size: int,
+    trigger_parent_size: int,
+    trigger_parent_ratio: float,
+) -> bool:
+    if parent_size < min_parent_size:
+        return False
+    if parent_size >= trigger_parent_size:
+        return True
+    if total_article_count > 0 and (parent_size / total_article_count) >= trigger_parent_ratio:
+        return True
+    return False
+
+
 def save_cluster_subclusters_for_run(
     conn,
     run_id: int,
     min_parent_size: int = MIN_SUBCLUSTER_PARENT_SIZE,
     min_cluster_size: int = SUBCLUSTER_MIN_CLUSTER_SIZE,
     min_samples: int = SUBCLUSTER_MIN_SAMPLES,
+    trigger_parent_size: int = DEFAULT_TRIGGER_PARENT_SIZE,
+    trigger_parent_ratio: float = DEFAULT_TRIGGER_PARENT_RATIO,
+    total_article_count: int = 0,
 ) -> dict:
     cluster_articles = _load_cluster_articles_for_run(conn, run_id)
     _delete_existing_subclusters_for_run(conn, run_id)
 
-    subcluster_rows = []
     article_rows = []
     summary = {
         "cluster_count_seen": 0,
@@ -84,25 +123,34 @@ def save_cluster_subclusters_for_run(
         "subcluster_count": 0,
         "assigned_article_count": 0,
         "unassigned_article_count": 0,
+        "skipped_parent_count": 0,
     }
 
     for cluster_id, items in cluster_articles.items():
         summary["cluster_count_seen"] += 1
         n = len(items)
+        parent_size = int(items[0]["cluster_size"]) if items else n
 
-        if n < min_parent_size:
+        if not _should_subcluster_parent(
+            parent_size=parent_size,
+            total_article_count=total_article_count,
+            min_parent_size=min_parent_size,
+            trigger_parent_size=trigger_parent_size,
+            trigger_parent_ratio=trigger_parent_ratio,
+        ):
+            summary["skipped_parent_count"] += 1
             summary["unassigned_article_count"] += n
             continue
 
         X = np.vstack([item["embedding"] for item in items]).astype(np.float32)
-
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
             metric="euclidean",
+            cluster_selection_method=SUBCLUSTER_SELECTION_METHOD,
+            prediction_data=True,
         )
         labels = clusterer.fit_predict(X)
-
         probabilities = getattr(clusterer, "probabilities_", None)
         outlier_scores = getattr(clusterer, "outlier_scores_", None)
 
@@ -117,7 +165,6 @@ def save_cluster_subclusters_for_run(
             continue
 
         summary["cluster_count_subclustered"] += 1
-
         sorted_labels = sorted(grouped.keys())
         local_subcluster_payloads = []
 
@@ -125,10 +172,8 @@ def save_cluster_subclusters_for_run(
             member_indices = grouped[label]
             member_items = [items[i] for i in member_indices]
             member_vectors = np.vstack([items[i]["embedding"] for i in member_indices]).astype(np.float32)
-
             centroid = _compute_centroid(member_vectors)
-            representative, member_distances = _choose_representative(member_items, member_vectors, centroid)
-
+            representative, _member_distances = _choose_representative(member_items, member_vectors, centroid)
             local_subcluster_payloads.append(
                 {
                     "run_id": run_id,
@@ -143,7 +188,6 @@ def save_cluster_subclusters_for_run(
                 }
             )
 
-        inserted = []
         with conn.cursor() as cur:
             inserted = execute_values(
                 cur,
@@ -176,31 +220,34 @@ def save_cluster_subclusters_for_run(
                 ],
                 fetch=True,
             )
-            print(f"inserted_subclusters={inserted}")
 
-        subcluster_id_by_label = {}
-        for subcluster_id, returned_cluster_id, returned_label in inserted:
-            subcluster_id_by_label[int(returned_label)] = int(subcluster_id)
-        print(f"subcluster_id_by_label={subcluster_id_by_label}")
+        subcluster_id_by_label = {int(returned_label): int(subcluster_id) for subcluster_id, _returned_cluster_id, returned_label in inserted}
 
         for payload in local_subcluster_payloads:
             label = payload["label"]
             subcluster_id = subcluster_id_by_label[label]
             centroid = payload["centroid"]
+            raw_distances = []
+            per_member = []
 
             for idx in payload["member_indices"]:
                 item = items[idx]
                 distance = float(np.linalg.norm(item["embedding"] - centroid))
-                probability = (
-                    float(probabilities[idx])
-                    if probabilities is not None and np.isfinite(probabilities[idx])
-                    else None
-                )
-                outlier_score = (
-                    float(outlier_scores[idx])
-                    if outlier_scores is not None and np.isfinite(outlier_scores[idx])
-                    else None
-                )
+                probability = float(probabilities[idx]) if probabilities is not None and np.isfinite(probabilities[idx]) else None
+                outlier_score = float(outlier_scores[idx]) if outlier_scores is not None and np.isfinite(outlier_scores[idx]) else None
+                raw_distances.append(distance)
+                per_member.append((idx, item, distance, probability, outlier_score))
+
+            distance_limit = float(np.quantile(raw_distances, SUBCLUSTER_MAX_DISTANCE_QUANTILE)) if raw_distances else None
+
+            for idx, item, distance, probability, outlier_score in per_member:
+                keep = True
+                if probability is not None and probability < SUBCLUSTER_MIN_PROBABILITY:
+                    keep = False
+                if distance_limit is not None and distance > distance_limit:
+                    keep = False
+                if not keep:
+                    continue
 
                 article_rows.append(
                     (
@@ -208,7 +255,7 @@ def save_cluster_subclusters_for_run(
                         cluster_id,
                         item["article_id"],
                         run_id,
-                        probability is not None and probability > 0.5,
+                        probability is not None and probability >= 0.5,
                         distance,
                         probability,
                         outlier_score,
@@ -216,8 +263,9 @@ def save_cluster_subclusters_for_run(
                 )
 
         summary["subcluster_count"] += len(local_subcluster_payloads)
-        summary["assigned_article_count"] += sum(len(x["member_indices"]) for x in local_subcluster_payloads)
-        summary["unassigned_article_count"] += int(np.sum(labels == -1))
+        assigned_here = len([row for row in article_rows if row[1] == cluster_id and row[3] == run_id])
+        summary["assigned_article_count"] += assigned_here
+        summary["unassigned_article_count"] += max(0, n - assigned_here)
 
     if article_rows:
         with conn.cursor() as cur:
@@ -235,6 +283,7 @@ def save_cluster_subclusters_for_run(
                     outlier_score
                 )
                 VALUES %s
+                ON CONFLICT DO NOTHING
                 """,
                 article_rows,
             )
