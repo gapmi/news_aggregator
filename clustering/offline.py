@@ -15,13 +15,14 @@ from clustering.cluster_subclustering import save_cluster_subclusters_for_run
 
 DEFAULT_WINDOW_HOURS = 168
 DEFAULT_LIMIT = 3000
-DEFAULT_MIN_CLUSTER_SIZE = 10
-DEFAULT_MIN_SAMPLES = 5
+DEFAULT_MIN_CLUSTER_SIZE = 8
+DEFAULT_MIN_SAMPLES = 2
+DEFAULT_CLUSTER_SELECTION_METHOD = "eom"
+DEFAULT_CLUSTER_SELECTION_EPSILON = 0.12
 
 DEFAULT_MIN_VALID_CLUSTER_COUNT = 7
-DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.35
+DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.50
 DEFAULT_MAX_PER_SOURCE = 300
-DEFAULT_CLUSTER_SELECTION_METHOD = "eom"
 DEFAULT_PARENT_SUBCLUSTER_TRIGGER_SIZE = 120
 DEFAULT_PARENT_SUBCLUSTER_TRIGGER_RATIO = 0.10
 
@@ -56,6 +57,11 @@ def parse_args():
         "--cluster-selection-method",
         default=DEFAULT_CLUSTER_SELECTION_METHOD,
         choices=["eom", "leaf"],
+    )
+    parser.add_argument(
+        "--cluster-selection-epsilon",
+        type=float,
+        default=DEFAULT_CLUSTER_SELECTION_EPSILON,
     )
     parser.add_argument(
         "--min-valid-cluster-count",
@@ -152,6 +158,7 @@ def load_batch(
                     """,
                     (window_hours, limit),
                 )
+
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -181,6 +188,7 @@ def validate_clustering_quality(
     max_largest_cluster_ratio: float = DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
 ) -> None:
     counts = Counter(labels.tolist())
+
     non_noise_counts = [count for label, count in counts.items() if int(label) != -1]
 
     cluster_count = len(non_noise_counts)
@@ -197,7 +205,8 @@ def validate_clustering_quality(
         raise ValueError(
             "clustering quality check failed: "
             f"largest_cluster_ratio={largest_cluster_ratio:.4f} > {max_largest_cluster_ratio:.4f}; "
-            f"largest_cluster_size={largest_cluster_size}; total_count={total_count}"
+            f"largest_cluster_size={largest_cluster_size}; "
+            f"total_count={total_count}"
         )
 
 
@@ -233,6 +242,7 @@ def save_run_start(conn, window_hours, min_cluster_size, min_samples):
 
 def save_clusters_and_links(conn, run_id, rows, X, labels):
     grouped = defaultdict(list)
+
     for idx, (row, label) in enumerate(zip(rows, labels)):
         if int(label) == -1:
             continue
@@ -247,8 +257,14 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
         items = grouped[label]
         cluster_rows = [item[0] for item in items]
         cluster_vectors = np.vstack([item[1] for item in items]).astype(np.float32)
+
         centroid = compute_centroid(cluster_vectors)
-        representative = choose_representative(cluster_rows, cluster_vectors, centroid=centroid)
+        representative = choose_representative(
+            cluster_rows,
+            cluster_vectors,
+            centroid=centroid,
+        )
+
         cluster_insert_rows.append(
             (
                 run_id,
@@ -367,6 +383,7 @@ def run_clustering(
     min_valid_cluster_count=DEFAULT_MIN_VALID_CLUSTER_COUNT,
     max_largest_cluster_ratio=DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
     cluster_selection_method=DEFAULT_CLUSTER_SELECTION_METHOD,
+    cluster_selection_epsilon=DEFAULT_CLUSTER_SELECTION_EPSILON,
     parent_subcluster_trigger_size=DEFAULT_PARENT_SUBCLUSTER_TRIGGER_SIZE,
     parent_subcluster_trigger_ratio=DEFAULT_PARENT_SUBCLUSTER_TRIGGER_RATIO,
     skip_quality_gate=False,
@@ -386,12 +403,14 @@ def run_clustering(
         min_samples=min_samples,
         metric="euclidean",
         cluster_selection_method=cluster_selection_method,
+        cluster_selection_epsilon=cluster_selection_epsilon,
         prediction_data=True,
     )
     labels = clusterer.fit_predict(X)
 
     counts = Counter(labels.tolist())
     noise_count = counts.get(-1, 0)
+
     non_noise_counts = [count for label, count in counts.items() if int(label) != -1]
 
     cluster_count = len(non_noise_counts)
@@ -406,6 +425,7 @@ def run_clustering(
     print(f"largest_cluster_ratio={largest_cluster_ratio:.4f}")
     print(f"noise_ratio={noise_ratio:.4f}")
     print(f"cluster_selection_method={cluster_selection_method}")
+    print(f"cluster_selection_epsilon={cluster_selection_epsilon:.4f}")
     print(f"parent_subcluster_trigger_size={parent_subcluster_trigger_size}")
     print(f"parent_subcluster_trigger_ratio={parent_subcluster_trigger_ratio:.4f}")
 
@@ -421,6 +441,7 @@ def run_clustering(
 
     conn = get_conn()
     run_id = None
+
     try:
         run_id = save_run_start(
             conn,
@@ -459,24 +480,31 @@ def run_clustering(
         )
 
         conn.commit()
+
         print(f"saved_run_id={run_id}")
         print(f"saved_cluster_count={saved_cluster_count}")
+
         return run_id
+
     except Exception:
         conn.rollback()
+
         if run_id is not None:
             try:
                 update_run_failed(conn, run_id)
                 conn.commit()
             except Exception:
                 conn.rollback()
+
         raise
+
     finally:
         conn.close()
 
 
 def main():
     args = parse_args()
+
     run_clustering(
         window_hours=args.window_hours,
         limit=args.limit,
@@ -486,6 +514,7 @@ def main():
         max_largest_cluster_ratio=args.max_largest_cluster_ratio,
         max_per_source=args.max_per_source,
         cluster_selection_method=args.cluster_selection_method,
+        cluster_selection_epsilon=args.cluster_selection_epsilon,
         parent_subcluster_trigger_size=args.parent_subcluster_trigger_size,
         parent_subcluster_trigger_ratio=args.parent_subcluster_trigger_ratio,
         skip_quality_gate=args.skip_quality_gate,
