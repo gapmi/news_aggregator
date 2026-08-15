@@ -81,6 +81,8 @@ def build_candidates(
     sim_weight: float,
     overlap_weight: float,
 ) -> list[dict[str, Any]]:
+    # Kept for backward compatibility: overlap contributes to score,
+    # but is no longer used as a hard filter for candidate selection.
     sql = """
     WITH parent_clusters AS (
         SELECT id, run_id, size, centroid
@@ -135,7 +137,6 @@ def build_candidates(
         "parent_run_id": parent_run_id,
         "child_run_id": child_run_id,
         "min_similarity": min_similarity,
-        "min_overlap_ratio": min_overlap_ratio,
         "sim_weight": sim_weight,
         "overlap_weight": overlap_weight,
     }
@@ -238,7 +239,12 @@ def parse_args():
     parser.add_argument("--parent-run-id", type=int)
     parser.add_argument("--child-run-id", type=int)
     parser.add_argument("--min-similarity", type=float, default=DEFAULT_MIN_SIMILARITY)
-    parser.add_argument("--min-overlap-ratio", type=float, default=DEFAULT_MIN_OVERLAP_RATIO)
+    parser.add_argument(
+        "--min-overlap-ratio",
+        type=float,
+        default=DEFAULT_MIN_OVERLAP_RATIO,
+        help="Reserved for compatibility; overlap affects score but is not a hard filter",
+        )
     parser.add_argument("--sim-weight", type=float, default=DEFAULT_SCORE_SIM_WEIGHT)
     parser.add_argument("--overlap-weight", type=float, default=DEFAULT_SCORE_OVERLAP_WEIGHT)
     parser.add_argument("--dry-run", action="store_true")
