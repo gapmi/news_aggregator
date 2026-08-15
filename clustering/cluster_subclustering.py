@@ -221,7 +221,12 @@ def save_cluster_subclusters_for_run(
                 fetch=True,
             )
 
-        subcluster_id_by_label = {int(returned_label): int(subcluster_id) for subcluster_id, _returned_cluster_id, returned_label in inserted}
+        subcluster_id_by_label = {
+            int(returned_label): int(subcluster_id)
+            for subcluster_id, _returned_cluster_id, returned_label in inserted
+        }
+
+        current_cluster_article_rows = []
 
         for payload in local_subcluster_payloads:
             label = payload["label"]
@@ -233,14 +238,26 @@ def save_cluster_subclusters_for_run(
             for idx in payload["member_indices"]:
                 item = items[idx]
                 distance = float(np.linalg.norm(item["embedding"] - centroid))
-                probability = float(probabilities[idx]) if probabilities is not None and np.isfinite(probabilities[idx]) else None
-                outlier_score = float(outlier_scores[idx]) if outlier_scores is not None and np.isfinite(outlier_scores[idx]) else None
+                probability = (
+                    float(probabilities[idx])
+                    if probabilities is not None and np.isfinite(probabilities[idx])
+                    else None
+                )
+                outlier_score = (
+                    float(outlier_scores[idx])
+                    if outlier_scores is not None and np.isfinite(outlier_scores[idx])
+                    else None
+                )
                 raw_distances.append(distance)
-                per_member.append((idx, item, distance, probability, outlier_score))
+                per_member.append((item, distance, probability, outlier_score))
 
-            distance_limit = float(np.quantile(raw_distances, SUBCLUSTER_MAX_DISTANCE_QUANTILE)) if raw_distances else None
+            distance_limit = (
+                float(np.quantile(raw_distances, SUBCLUSTER_MAX_DISTANCE_QUANTILE))
+                if raw_distances
+                else None
+            )
 
-            for idx, item, distance, probability, outlier_score in per_member:
+            for item, distance, probability, outlier_score in per_member:
                 keep = True
                 if probability is not None and probability < SUBCLUSTER_MIN_PROBABILITY:
                     keep = False
@@ -249,7 +266,7 @@ def save_cluster_subclusters_for_run(
                 if not keep:
                     continue
 
-                article_rows.append(
+                current_cluster_article_rows.append(
                     (
                         subcluster_id,
                         cluster_id,
@@ -263,9 +280,11 @@ def save_cluster_subclusters_for_run(
                 )
 
         summary["subcluster_count"] += len(local_subcluster_payloads)
-        assigned_here = len([row for row in article_rows if row[1] == cluster_id and row[3] == run_id])
+        assigned_here = len(current_cluster_article_rows)
         summary["assigned_article_count"] += assigned_here
         summary["unassigned_article_count"] += max(0, n - assigned_here)
+
+        article_rows.extend(current_cluster_article_rows)
 
     if article_rows:
         with conn.cursor() as cur:
