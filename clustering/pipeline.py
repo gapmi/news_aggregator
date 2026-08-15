@@ -17,9 +17,7 @@ from clustering.offline import (
     get_conn,
     run_clustering,
 )
-
 from clustering.radial_map import build_and_save_radial_maps_for_run
-
 from clustering.lineage import (
     DEFAULT_MIN_OVERLAP_RATIO,
     DEFAULT_MIN_SIMILARITY,
@@ -95,7 +93,15 @@ def parse_args():
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
 
     parser.add_argument("--min-similarity", type=float, default=DEFAULT_MIN_SIMILARITY)
-    parser.add_argument("--min-overlap-ratio", type=float, default=DEFAULT_MIN_OVERLAP_RATIO)
+    parser.add_argument(
+        "--min-overlap-ratio",
+        type=float,
+        default=DEFAULT_MIN_OVERLAP_RATIO,
+        help=(
+            "Reserved for backward compatibility; overlap contributes "
+            "to lineage score but is not a hard filter."
+        ),
+    )
     parser.add_argument("--sim-weight", type=float, default=DEFAULT_SCORE_SIM_WEIGHT)
     parser.add_argument("--overlap-weight", type=float, default=DEFAULT_SCORE_OVERLAP_WEIGHT)
 
@@ -144,7 +150,7 @@ def rebuild_lineage_for_new_run(
     conn,
     current_run_id: int,
     min_similarity: float,
-    min_overlap_ratio: float,
+    _legacy_min_overlap_ratio: float,
     sim_weight: float,
     overlap_weight: float,
     dry_run: bool = False,
@@ -166,7 +172,7 @@ def rebuild_lineage_for_new_run(
         parent_run_id=parent_run_id,
         child_run_id=current_run_id,
         min_similarity=min_similarity,
-        min_overlap_ratio=min_overlap_ratio,
+        _legacy_min_overlap_ratio=_legacy_min_overlap_ratio,
         sim_weight=sim_weight,
         overlap_weight=overlap_weight,
     )
@@ -224,6 +230,7 @@ def main():
             "max_per_source": args.max_per_source,
             "min_similarity": args.min_similarity,
             "min_overlap_ratio": args.min_overlap_ratio,
+            "overlap_hard_filter": False,
             "sim_weight": args.sim_weight,
             "overlap_weight": args.overlap_weight,
             "skip_lineage": args.skip_lineage,
@@ -280,7 +287,7 @@ def main():
             conn=conn,
             current_run_id=run_id,
             min_similarity=args.min_similarity,
-            min_overlap_ratio=args.min_overlap_ratio,
+            _legacy_min_overlap_ratio=args.min_overlap_ratio,
             sim_weight=args.sim_weight,
             overlap_weight=args.overlap_weight,
             dry_run=args.dry_run_lineage,
