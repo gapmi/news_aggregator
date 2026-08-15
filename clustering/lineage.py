@@ -128,10 +128,6 @@ def build_candidates(
       ON o.parent_cluster_id = p.id
      AND o.child_cluster_id = c.id
     WHERE (1 - (p.centroid <=> c.centroid)) >= %(min_similarity)s
-      AND (
-          COALESCE(o.overlap_count, 0)::double precision
-          / LEAST(p.size, c.size)::double precision
-      ) >= %(min_overlap_ratio)s
     ORDER BY parent_cluster_id, score DESC, article_overlap_count DESC, child_size DESC, child_cluster_id
     """
 
