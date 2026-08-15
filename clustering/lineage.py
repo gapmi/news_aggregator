@@ -1,4 +1,3 @@
-# clustering/lineage.py
 from __future__ import annotations
 
 import argparse
@@ -77,7 +76,7 @@ def build_candidates(
     parent_run_id: int,
     child_run_id: int,
     min_similarity: float,
-    min_overlap_ratio: float,
+    _legacy_min_overlap_ratio: float,
     sim_weight: float,
     overlap_weight: float,
 ) -> list[dict[str, Any]]:
@@ -130,7 +129,12 @@ def build_candidates(
       ON o.parent_cluster_id = p.id
      AND o.child_cluster_id = c.id
     WHERE (1 - (p.centroid <=> c.centroid)) >= %(min_similarity)s
-    ORDER BY parent_cluster_id, score DESC, article_overlap_count DESC, child_size DESC, child_cluster_id
+    ORDER BY
+        parent_cluster_id,
+        score DESC,
+        article_overlap_count DESC,
+        child_size DESC,
+        child_cluster_id
     """
 
     params = {
@@ -243,8 +247,11 @@ def parse_args():
         "--min-overlap-ratio",
         type=float,
         default=DEFAULT_MIN_OVERLAP_RATIO,
-        help="Reserved for compatibility; overlap affects score but is not a hard filter",
-        )
+        help=(
+            "Reserved for backward compatibility; overlap contributes "
+            "to score but is not a hard filter for candidates."
+        ),
+    )
     parser.add_argument("--sim-weight", type=float, default=DEFAULT_SCORE_SIM_WEIGHT)
     parser.add_argument("--overlap-weight", type=float, default=DEFAULT_SCORE_OVERLAP_WEIGHT)
     parser.add_argument("--dry-run", action="store_true")
@@ -283,7 +290,7 @@ def main():
             parent_run_id=run_pair.parent_run_id,
             child_run_id=run_pair.child_run_id,
             min_similarity=args.min_similarity,
-            min_overlap_ratio=args.min_overlap_ratio,
+            _legacy_min_overlap_ratio=args.min_overlap_ratio,
             sim_weight=args.sim_weight,
             overlap_weight=args.overlap_weight,
         )
