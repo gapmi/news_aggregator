@@ -219,7 +219,7 @@ def main():
         format="%(message)s",
         force=True,
     )
-    
+
     log.setLevel(logging.INFO)
 
     args = parse_args()
@@ -312,28 +312,26 @@ def main():
                 skip_quality_gate=args.skip_quality_gate,
             )
         except ValueError as exc:
-            capture_pipeline_error(
-                clustering_ctx,
-                PipelineStageError(
-                    "CLUSTERING_VALIDATION_FAILED",
-                    str(exc),
-                    error_type="ValueError",
-                    retryable=False,
-                    extra={"pipeline_run_id": pipeline_run_id},
-                ),
+            wrapped = PipelineStageError(
+                "CLUSTERING_VALIDATION_FAILED",
+                str(exc),
+                error_type=type(exc).__name__,
+                retryable=False,
+                extra={"pipeline_run_id": pipeline_run_id},
             )
+            wrapped.__cause__ = exc
+            capture_pipeline_error(clustering_ctx, wrapped)
             raise
         except Exception as exc:
-            capture_pipeline_error(
-                clustering_ctx,
-                PipelineStageError(
-                    "CLUSTERING_FAILED",
-                    str(exc),
-                    error_type=type(exc).__name__,
-                    retryable=False,
-                    extra={"pipeline_run_id": pipeline_run_id},
-                ),
+            wrapped = PipelineStageError(
+                "CLUSTERING_FAILED",
+                str(exc),
+                error_type=type(exc).__name__,
+                retryable=False,
+                extra={"pipeline_run_id": pipeline_run_id},
             )
+            wrapped.__cause__ = exc
+            capture_pipeline_error(clustering_ctx, wrapped)
             raise
 
         clustering_ctx.run_id = run_id
