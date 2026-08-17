@@ -8,6 +8,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import psycopg2.extras
+
+from clustering.offline import get_conn
+
 
 logger = logging.getLogger("pipeline")
 
@@ -60,6 +64,46 @@ def emit_stage_event(level: str, ctx: PipelineContext, message: str, **fields: A
         json.dumps(payload, ensure_ascii=False, default=str),
     )
 
+def save_pipeline_error_event(payload: dict[str, Any]) -> None:
+    try:
+        extra = payload.get("extra") or {}
+        pipeline_run_id = extra.get("pipeline_run_id")
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO pipeline_error_events (
+                        pipeline_run_id,
+                        run_id,
+                        stage,
+                        error_code,
+                        error_type,
+                        message,
+                        retryable,
+                        stacktrace,
+                        extra
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        pipeline_run_id,
+                        payload.get("run_id"),
+                        payload["stage"],
+                        payload["error_code"],
+                        payload["error_type"],
+                        payload["message"],
+                        payload["retryable"],
+                        payload.get("stacktrace"),
+                        psycopg2.extras.Json(extra),
+                    ),
+                )
+    except Exception:
+        logger.exception("failed to persist pipeline error event")
+
 
 def capture_pipeline_error(ctx: PipelineContext, exc: Exception, **fields: Any) -> None:
     current_trace = traceback.format_exc()
@@ -94,3 +138,4 @@ def capture_pipeline_error(ctx: PipelineContext, exc: Exception, **fields: Any) 
         )
 
     logger.error(json.dumps(payload, ensure_ascii=False, default=str))
+    save_pipeline_error_event(payload)
