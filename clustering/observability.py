@@ -62,6 +62,12 @@ def emit_stage_event(level: str, ctx: PipelineContext, message: str, **fields: A
 
 
 def capture_pipeline_error(ctx: PipelineContext, exc: Exception, **fields: Any) -> None:
+    current_trace = traceback.format_exc()
+    if current_trace.strip() == "NoneType: None":
+        current_trace = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__, chain=True)
+        )
+
     if isinstance(exc, PipelineStageError):
         payload = _base_event(
             "ERROR",
@@ -71,7 +77,7 @@ def capture_pipeline_error(ctx: PipelineContext, exc: Exception, **fields: Any) 
             error_type=exc.error_type,
             retryable=exc.retryable,
             extra=exc.extra,
-            stacktrace="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            stacktrace=current_trace,
             **fields,
         )
     else:
@@ -83,7 +89,7 @@ def capture_pipeline_error(ctx: PipelineContext, exc: Exception, **fields: Any) 
             error_type=type(exc).__name__,
             retryable=False,
             extra={},
-            stacktrace="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            stacktrace=current_trace,
             **fields,
         )
 
