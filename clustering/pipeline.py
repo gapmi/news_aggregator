@@ -28,6 +28,12 @@ from clustering.lineage import (
     save_lineage,
     select_mutual_best,
 )
+from clustering.observability import (
+    PipelineContext,
+    PipelineStageError,
+    emit_stage_event,
+    capture_pipeline_error,
+)
 
 log = logging.getLogger(__name__)
 
@@ -241,16 +247,46 @@ def main():
         },
     )
 
+    pipeline_ctx = PipelineContext(
+        run_id=None,
+        stage="pipeline",
+        attempt=1,
+    )
+
+    emit_stage_event(
+        "INFO",
+        pipeline_ctx,
+        "pipeline_started",
+        job_type="pipeline",
+        pipeline_run_id=pipeline_run_id,
+        window_hours=args.window_hours,
+        limit=args.limit,
+        min_cluster_size=args.min_cluster_size,
+        min_samples=args.min_samples,
+        max_per_source=args.max_per_source,
+        min_similarity=args.min_similarity,
+        min_overlap_ratio=args.min_overlap_ratio,
+        sim_weight=args.sim_weight,
+        overlap_weight=args.overlap_weight,
+        skip_lineage=args.skip_lineage,
+        dry_run_lineage=args.dry_run_lineage,
+        min_valid_cluster_count=args.min_valid_cluster_count,
+        max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+        skip_quality_gate=args.skip_quality_gate,
+    )
+
     try:
-        log.info(
-            "Starting clustering pipeline window_hours=%s limit=%s min_cluster_size=%s min_samples=%s",
-            args.window_hours,
-            args.limit,
-            args.min_cluster_size,
-            args.min_samples,
+        clustering_ctx = PipelineContext(
+            run_id=None,
+            stage="clustering",
+            attempt=1,
         )
 
-        run_id = run_clustering(
+        emit_stage_event(
+            "INFO",
+            clustering_ctx,
+            "clustering_started",
+            pipeline_run_id=pipeline_run_id,
             window_hours=args.window_hours,
             limit=args.limit,
             min_cluster_size=args.min_cluster_size,
@@ -261,7 +297,59 @@ def main():
             skip_quality_gate=args.skip_quality_gate,
         )
 
+        try:
+            run_id = run_clustering(
+                window_hours=args.window_hours,
+                limit=args.limit,
+                min_cluster_size=args.min_cluster_size,
+                min_samples=args.min_samples,
+                min_valid_cluster_count=args.min_valid_cluster_count,
+                max_largest_cluster_ratio=args.max_largest_cluster_ratio,
+                max_per_source=args.max_per_source,
+                skip_quality_gate=args.skip_quality_gate,
+            )
+        except ValueError as exc:
+            capture_pipeline_error(
+                clustering_ctx,
+                PipelineStageError(
+                    "CLUSTERING_VALIDATION_FAILED",
+                    str(exc),
+                    error_type="ValueError",
+                    retryable=False,
+                    extra={"pipeline_run_id": pipeline_run_id},
+                ),
+            )
+            raise
+        except Exception as exc:
+            capture_pipeline_error(
+                clustering_ctx,
+                PipelineStageError(
+                    "CLUSTERING_FAILED",
+                    str(exc),
+                    error_type=type(exc).__name__,
+                    retryable=False,
+                    extra={"pipeline_run_id": pipeline_run_id},
+                ),
+            )
+            raise
+
+        clustering_ctx.run_id = run_id
+
+        emit_stage_event(
+            "INFO",
+            clustering_ctx,
+            "clustering_finished",
+            pipeline_run_id=pipeline_run_id,
+            produced_run_id=run_id,
+        )
+
         if run_id is None:
+            emit_stage_event(
+                "INFO",
+                pipeline_ctx,
+                "pipeline_no_run",
+                pipeline_run_id=pipeline_run_id,
+            )
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
@@ -269,10 +357,18 @@ def main():
                 related_run_id=None,
                 meta={"lineage_inserted": 0},
             )
-            log.info("Pipeline finished: clustering produced no run")
             return
 
         if args.skip_lineage:
+            emit_stage_event(
+                "INFO",
+                pipeline_ctx,
+                "pipeline_finished",
+                pipeline_run_id=pipeline_run_id,
+                related_run_id=run_id,
+                lineage_skipped=True,
+                lineage_inserted=0,
+            )
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
@@ -280,29 +376,108 @@ def main():
                 related_run_id=run_id,
                 meta={"lineage_skipped": True, "lineage_inserted": 0},
             )
-            log.info("Pipeline finished: run_id=%s lineage skipped", run_id)
             return
 
-        inserted = rebuild_lineage_for_new_run(
-            conn=conn,
-            current_run_id=run_id,
+        lineage_ctx = PipelineContext(
+            run_id=run_id,
+            stage="lineage",
+            attempt=1,
+        )
+
+        emit_stage_event(
+            "INFO",
+            lineage_ctx,
+            "lineage_started",
+            pipeline_run_id=pipeline_run_id,
             min_similarity=args.min_similarity,
-            _legacy_min_overlap_ratio=args.min_overlap_ratio,
+            min_overlap_ratio=args.min_overlap_ratio,
             sim_weight=args.sim_weight,
             overlap_weight=args.overlap_weight,
             dry_run=args.dry_run_lineage,
         )
 
-        radial_result = build_and_save_radial_maps_for_run(conn, run_id)
-        log.info(
-            "Radial maps saved: run_id=%s clusters=%s points=%s",
-            run_id,
-            radial_result["cluster_count"],
-            radial_result["point_count"],
+        try:
+            inserted = rebuild_lineage_for_new_run(
+                conn=conn,
+                current_run_id=run_id,
+                min_similarity=args.min_similarity,
+                _legacy_min_overlap_ratio=args.min_overlap_ratio,
+                sim_weight=args.sim_weight,
+                overlap_weight=args.overlap_weight,
+                dry_run=args.dry_run_lineage,
+            )
+        except Exception as exc:
+            capture_pipeline_error(
+                lineage_ctx,
+                PipelineStageError(
+                    "LINEAGE_BUILD_FAILED",
+                    str(exc),
+                    error_type=type(exc).__name__,
+                    retryable=False,
+                    extra={"pipeline_run_id": pipeline_run_id},
+                ),
+            )
+            raise
+
+        emit_stage_event(
+            "INFO",
+            lineage_ctx,
+            "lineage_finished",
+            pipeline_run_id=pipeline_run_id,
+            lineage_matches=inserted,
+            dry_run=args.dry_run_lineage,
+        )
+
+        radial_ctx = PipelineContext(
+            run_id=run_id,
+            stage="radial_map",
+            attempt=1,
+        )
+
+        emit_stage_event(
+            "INFO",
+            radial_ctx,
+            "radial_map_started",
+            pipeline_run_id=pipeline_run_id,
+        )
+
+        try:
+            radial_result = build_and_save_radial_maps_for_run(conn, run_id)
+        except Exception as exc:
+            capture_pipeline_error(
+                radial_ctx,
+                PipelineStageError(
+                    "RADIAL_MAP_BUILD_FAILED",
+                    str(exc),
+                    error_type=type(exc).__name__,
+                    retryable=False,
+                    extra={"pipeline_run_id": pipeline_run_id},
+                ),
+            )
+            raise
+
+        emit_stage_event(
+            "INFO",
+            radial_ctx,
+            "radial_map_finished",
+            pipeline_run_id=pipeline_run_id,
+            radial_cluster_count=radial_result["cluster_count"],
+            radial_point_count=radial_result["point_count"],
         )
 
         if args.dry_run_lineage:
             conn.rollback()
+            emit_stage_event(
+                "INFO",
+                pipeline_ctx,
+                "pipeline_finished",
+                pipeline_run_id=pipeline_run_id,
+                related_run_id=run_id,
+                dry_run_lineage=True,
+                lineage_matches=inserted,
+                radial_cluster_count=radial_result["cluster_count"],
+                radial_point_count=radial_result["point_count"],
+            )
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
@@ -315,13 +490,18 @@ def main():
                     "radial_point_count": radial_result["point_count"],
                 },
             )
-            log.info(
-                "Pipeline dry-run finished: run_id=%s lineage_matches=%s",
-                run_id,
-                inserted,
-            )
         else:
             conn.commit()
+            emit_stage_event(
+                "INFO",
+                pipeline_ctx,
+                "pipeline_finished",
+                pipeline_run_id=pipeline_run_id,
+                related_run_id=run_id,
+                lineage_inserted=inserted,
+                radial_cluster_count=radial_result["cluster_count"],
+                radial_point_count=radial_result["point_count"],
+            )
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
@@ -333,31 +513,49 @@ def main():
                     "radial_point_count": radial_result["point_count"],
                 },
             )
-            log.info(
-                "Pipeline finished: run_id=%s lineage_inserted=%s",
-                run_id,
-                inserted,
-            )
 
     except Exception as e:
+        failed_run_id = locals().get("run_id")
+
         try:
             conn.rollback()
         except Exception:
             pass
+
+        capture_pipeline_error(
+            PipelineContext(
+                run_id=failed_run_id,
+                stage="pipeline",
+                attempt=1,
+            ),
+            PipelineStageError(
+                "PIPELINE_FAILED",
+                str(e),
+                error_type=type(e).__name__,
+                retryable=False,
+                extra={
+                    "pipeline_run_id": pipeline_run_id,
+                    "failed_run_id": failed_run_id,
+                },
+            ),
+        )
 
         try:
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
                 status="failed",
-                related_run_id=locals().get("run_id"),
+                related_run_id=failed_run_id,
                 error=str(e),
-                meta={"failed_step": "pipeline"},
+                meta={
+                    "failed_step": "pipeline",
+                    "error_code": "PIPELINE_FAILED",
+                    "error_type": type(e).__name__,
+                },
             )
         except Exception:
             log.exception("Failed to update pipeline_runs for pipeline_run_id=%s", pipeline_run_id)
 
-        log.exception("Pipeline failed")
         raise
 
     finally:
