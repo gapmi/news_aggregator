@@ -216,8 +216,11 @@ def rebuild_lineage_for_new_run(
 def main():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(message)s",
+        force=True,
     )
+    
+    log.setLevel(logging.INFO)
 
     args = parse_args()
 
