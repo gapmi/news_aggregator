@@ -186,7 +186,7 @@ def validate_clustering_quality(
     total_count: int,
     min_valid_cluster_count: int = DEFAULT_MIN_VALID_CLUSTER_COUNT,
     max_largest_cluster_ratio: float = DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
-) -> None:
+) -> str | None:
     counts = Counter(labels.tolist())
 
     non_noise_counts = [count for label, count in counts.items() if int(label) != -1]
@@ -196,19 +196,21 @@ def validate_clustering_quality(
     largest_cluster_ratio = largest_cluster_size / total_count if total_count > 0 else 0.0
 
     if cluster_count < min_valid_cluster_count:
-        raise ValueError(
+        return (
             "clustering quality check failed: "
             f"cluster_count={cluster_count} < {min_valid_cluster_count}"
         )
 
     if largest_cluster_ratio > max_largest_cluster_ratio:
-        raise ValueError(
+        return (
             "clustering quality check failed: "
-            f"largest_cluster_ratio={largest_cluster_ratio:.4f} > {max_largest_cluster_ratio:.4f}; "
+            f"largest_cluster_ratio={largest_cluster_ratio:.4f} > "
+            f"{max_largest_cluster_ratio:.4f}; "
             f"largest_cluster_size={largest_cluster_size}; "
             f"total_count={total_count}"
         )
 
+    return None
 
 def choose_representative(cluster_rows, cluster_vectors, centroid=None):
     if centroid is None:
@@ -398,7 +400,7 @@ def update_run_degraded(
                 run_id,
             ),
         )
-        
+
 def update_run_failed(conn, run_id):
     with conn.cursor() as cur:
         cur.execute(
