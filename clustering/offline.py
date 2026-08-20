@@ -514,7 +514,9 @@ def run_clustering(
         print(f"named_cluster_count={named_cluster_count}")
         print(f"saved_cluster_ids={saved_cluster_ids}")
 
-        update_run_success(
+        update_run = update_run_degraded if quality_error else update_run_success
+
+        update_run(
             conn,
             run_id=run_id,
             article_count=len(rows),
@@ -527,6 +529,11 @@ def run_clustering(
         )
 
         conn.commit()
+
+        if quality_error:
+            print(f"saved_run_status=degraded reason={quality_error}")
+        else:
+            print("saved_run_status=success")
 
         print(f"saved_run_id={run_id}")
         print(f"saved_cluster_count={saved_cluster_count}")
