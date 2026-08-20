@@ -469,15 +469,22 @@ def run_clustering(
     print(f"parent_subcluster_trigger_size={parent_subcluster_trigger_size}")
     print(f"parent_subcluster_trigger_ratio={parent_subcluster_trigger_ratio:.4f}")
 
+    quality_error = None
+
     if skip_quality_gate:
         print("quality_gate=skipped")
     else:
-        validate_clustering_quality(
+        quality_error = validate_clustering_quality(
             labels=labels,
             total_count=len(rows),
             min_valid_cluster_count=min_valid_cluster_count,
             max_largest_cluster_ratio=max_largest_cluster_ratio,
         )
+
+        if quality_error:
+            print(f"quality_gate=degraded: {quality_error}")
+        else:
+            print("quality_gate=passed")
 
     conn = get_conn()
     run_id = None
