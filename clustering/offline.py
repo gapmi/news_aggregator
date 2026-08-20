@@ -360,7 +360,45 @@ def update_run_success(
             ),
         )
 
-
+def update_run_degraded(
+    conn,
+    run_id,
+    article_count,
+    cluster_count,
+    noise_count,
+    largest_cluster_size,
+    largest_cluster_ratio,
+    noise_ratio,
+    max_per_source,
+):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE clustering_runs
+            SET finished_at = NOW(),
+                status = %s,
+                article_count = %s,
+                cluster_count = %s,
+                noise_count = %s,
+                largest_cluster_size = %s,
+                largest_cluster_ratio = %s,
+                noise_ratio = %s,
+                max_per_source = %s
+            WHERE id = %s
+            """,
+            (
+                "degraded",
+                article_count,
+                cluster_count,
+                noise_count,
+                largest_cluster_size,
+                largest_cluster_ratio,
+                noise_ratio,
+                max_per_source,
+                run_id,
+            ),
+        )
+        
 def update_run_failed(conn, run_id):
     with conn.cursor() as cur:
         cur.execute(
