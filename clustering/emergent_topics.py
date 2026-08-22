@@ -125,6 +125,15 @@ def save_emergent_topics_for_run(
         "unassigned_article_count": len(items),
     }
 
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM emergent_topic_articles
+            WHERE run_id = %s
+            """,
+            (run_id,),
+        )
+
     _clear_emergent_topics_for_run(conn, run_id)
 
     if len(items) < min_cluster_size:
@@ -152,7 +161,8 @@ def save_emergent_topics_for_run(
     if not grouped:
         return summary
 
-    payloads = []
+    topic_rows = []
+    topic_members = []
 
     for label in sorted(grouped):
         member_indices = grouped[label]
@@ -225,28 +235,50 @@ def save_emergent_topics_for_run(
             mean_probability=mean_probability,
         )
 
-        payloads.append(
-            (
-                run_id,
-                "emergent",
-                representative["article_id"],
-                representative["article_id"],
-                representative["title"],
-                len(accepted_indices),
-                source_count,
-                first_seen_at,
-                last_seen_at,
-                mean_probability,
-                mean_probability,
-                promotion_score,
-            )
+        topic_rows.append(
+            {
+                "label": label,
+                "row": (
+                    run_id,
+                    "emergent",
+                    representative["article_id"],
+                    representative["article_id"],
+                    representative["title"],
+                    len(accepted_indices),
+                    source_count,
+                    first_seen_at,
+                    last_seen_at,
+                    mean_probability,
+                    mean_probability,
+                    promotion_score,
+                ),
+            }
         )
 
-    if not payloads:
+        for idx in accepted_indices:
+            probability = (
+                float(probabilities[idx])
+                if probabilities is not None and np.isfinite(probabilities[idx])
+                else None
+            )
+            distance = float(np.linalg.norm(items[idx]["embedding"] - centroid))
+
+            topic_members.append(
+                {
+                    "label": label,
+                    "article_id": items[idx]["article_id"],
+                    "probability": probability,
+                    "distance": distance,
+                    "is_representative": items[idx]["article_id"] == representative["article_id"],
+                }
+            )
+
+    if not topic_rows:
         return summary
 
+    inserted = []
     with conn.cursor() as cur:
-        execute_values(
+        inserted = execute_values(
             cur,
             """
             INSERT INTO emergent_topics (
@@ -264,12 +296,56 @@ def save_emergent_topics_for_run(
                 promotion_score
             )
             VALUES %s
+            RETURNING id, representative_article_id, title
             """,
-            payloads,
+            [item["row"] for item in topic_rows],
+            fetch=True,
+            page_size=len(topic_rows),
         )
 
-    summary["emergent_topic_count"] = len(payloads)
-    summary["assigned_article_count"] = sum(payload[5] for payload in payloads)
+    topic_id_by_label = {}
+    for item, inserted_row in zip(topic_rows, inserted):
+        topic_id_by_label[item["label"]] = int(inserted_row[0])
+
+    membership_rows = []
+    for member in topic_members:
+        emergent_topic_id = topic_id_by_label[member["label"]]
+        membership_rows.append(
+            (
+                emergent_topic_id,
+                member["article_id"],
+                run_id,
+                member["probability"],
+                member["distance"],
+                member["is_representative"],
+            )
+        )
+
+    if membership_rows:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO emergent_topic_articles (
+                    emergent_topic_id,
+                    article_id,
+                    run_id,
+                    probability,
+                    distance,
+                    is_representative
+                )
+                VALUES %s
+                ON CONFLICT (emergent_topic_id, article_id) DO UPDATE
+                SET probability = EXCLUDED.probability,
+                    distance = EXCLUDED.distance,
+                    is_representative = EXCLUDED.is_representative,
+                    run_id = EXCLUDED.run_id
+                """,
+                membership_rows,
+            )
+
+    summary["emergent_topic_count"] = len(topic_rows)
+    summary["assigned_article_count"] = len(membership_rows)
     summary["unassigned_article_count"] = max(
         0,
         len(items) - summary["assigned_article_count"],
