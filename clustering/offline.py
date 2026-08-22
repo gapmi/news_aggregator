@@ -12,6 +12,7 @@ from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 from clustering.cluster_naming import upsert_cluster_names_for_run
 from clustering.cluster_subclustering import save_cluster_subclusters_for_run
+from clustering.emergent_topics import save_emergent_topics_for_run
 
 DEFAULT_WINDOW_HOURS = 168
 DEFAULT_LIMIT = 3000
@@ -607,6 +608,9 @@ def run_clustering(
             total_article_count=len(rows),
         )
         print(f"subcluster_result={subcluster_result}")
+
+        emergent_result = save_emergent_topics_for_run(conn, run_id)
+        print(f"emergent_result={emergent_result}")
 
         named_cluster_count = upsert_cluster_names_for_run(conn, run_id)
         print(f"named_cluster_count={named_cluster_count}")
