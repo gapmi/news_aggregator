@@ -248,102 +248,139 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
     for idx, (row, label) in enumerate(zip(rows, labels)):
         if int(label) == -1:
             continue
-        grouped[int(label)].append((row, X[idx]))
+        grouped[int(label)].append((row, X[idx], idx))
 
     ordered_labels = sorted(grouped.keys())
-    if not ordered_labels:
-        return {"cluster_count": 0, "cluster_ids": []}
-
-    cluster_insert_rows = []
-    total_non_noise = sum(len(grouped[label]) for label in ordered_labels)
-
-    for label in ordered_labels:
-        items = grouped[label]
-        cluster_rows = [item[0] for item in items]
-        cluster_vectors = np.vstack([item[1] for item in items]).astype(np.float32)
-
-        centroid = compute_centroid(cluster_vectors)
-        representative = choose_representative(
-            cluster_rows,
-            cluster_vectors,
-            centroid=centroid,
-        )
-
-        distances = np.linalg.norm(cluster_vectors - centroid, axis=1)
-        mean_distance = float(distances.mean()) if len(distances) else 0.0
-        quality_score = float(1.0 / (1.0 + mean_distance))
-
-        published_values = [
-            row.get("published")
-            for row in cluster_rows
-            if row.get("published") is not None
-        ]
-        first_seen_at = min(published_values) if published_values else None
-        last_seen_at = max(published_values) if published_values else None
-
-        cluster_size = len(cluster_rows)
-        cluster_share = (cluster_size / total_non_noise) if total_non_noise > 0 else 0.0
-        is_oversized = bool(cluster_size >= 40 or cluster_share >= 0.06)
-
-        cluster_insert_rows.append(
-            (
-                run_id,
-                label,
-                cluster_size,
-                representative["id"],
-                representative["title"],
-                centroid,
-                "batch",
-                None,
-                None,
-                None,
-                quality_score,
-                is_oversized,
-                False,
-                0,
-                None,
-                first_seen_at,
-                last_seen_at,
-            )
-        )
 
     cluster_id_by_label = {}
-    with conn.cursor() as cur:
-        execute_values(
-            cur,
-            """
-            INSERT INTO clusters (
-                run_id,
-                label,
-                size,
-                representative_article_id,
-                representative_title,
-                centroid,
-                origin_type,
-                origin_emergent_topic_id,
-                origin_sector_id,
-                parent_cluster_id,
-                quality_score,
-                is_oversized,
-                has_sectors,
-                visible_sector_count,
-                largest_sector_ratio,
-                first_seen_at,
-                last_seen_at
+
+    if ordered_labels:
+        cluster_insert_rows = []
+        total_non_noise = sum(len(grouped[label]) for label in ordered_labels)
+
+        for label in ordered_labels:
+            items = grouped[label]
+            cluster_rows = [item[0] for item in items]
+            cluster_vectors = np.vstack([item[1] for item in items]).astype(np.float32)
+
+            centroid = compute_centroid(cluster_vectors)
+            representative = choose_representative(
+                cluster_rows,
+                cluster_vectors,
+                centroid=centroid,
             )
-            VALUES %s
-            RETURNING id, label
-            """,
-            cluster_insert_rows,
-        )
-        for cluster_id, label in cur.fetchall():
-            cluster_id_by_label[int(label)] = cluster_id
+
+            distances = np.linalg.norm(cluster_vectors - centroid, axis=1)
+            mean_distance = float(distances.mean()) if len(distances) else 0.0
+            quality_score = float(1.0 / (1.0 + mean_distance))
+
+            published_values = [
+                row.get("published")
+                for row in cluster_rows
+                if row.get("published") is not None
+            ]
+            first_seen_at = min(published_values) if published_values else None
+            last_seen_at = max(published_values) if published_values else None
+
+            cluster_size = len(cluster_rows)
+            cluster_share = (cluster_size / total_non_noise) if total_non_noise > 0 else 0.0
+            is_oversized = bool(cluster_size >= 40 or cluster_share >= 0.06)
+
+            cluster_insert_rows.append(
+                (
+                    run_id,
+                    label,
+                    cluster_size,
+                    representative["id"],
+                    representative["title"],
+                    centroid,
+                    "batch",
+                    None,
+                    None,
+                    None,
+                    quality_score,
+                    is_oversized,
+                    False,
+                    0,
+                    None,
+                    first_seen_at,
+                    last_seen_at,
+                )
+            )
+
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO clusters (
+                    run_id,
+                    label,
+                    size,
+                    representative_article_id,
+                    representative_title,
+                    centroid,
+                    origin_type,
+                    origin_emergent_topic_id,
+                    origin_sector_id,
+                    parent_cluster_id,
+                    quality_score,
+                    is_oversized,
+                    has_sectors,
+                    visible_sector_count,
+                    largest_sector_ratio,
+                    first_seen_at,
+                    last_seen_at
+                )
+                VALUES %s
+                RETURNING id, label
+                """,
+                cluster_insert_rows,
+            )
+            for cluster_id, label in cur.fetchall():
+                cluster_id_by_label[int(label)] = int(cluster_id)
 
     link_rows = []
-    for label in ordered_labels:
+    run_article_rows = []
+
+    probabilities = None
+
+    for idx, (row, label) in enumerate(zip(rows, labels)):
+        label = int(label)
+        article_id = int(row["id"])
+
+        if label == -1:
+            run_article_rows.append(
+                (
+                    run_id,
+                    article_id,
+                    -1,
+                    None,
+                    None,
+                )
+            )
+            continue
+
         cluster_id = cluster_id_by_label[label]
-        for row, _vector in grouped[label]:
-            link_rows.append((cluster_id, row["id"]))
+        link_rows.append((cluster_id, article_id))
+
+        probability = None
+        if probabilities is not None:
+            try:
+                value = probabilities[idx]
+                if value is not None and np.isfinite(value):
+                    probability = float(value)
+            except Exception:
+                probability = None
+
+        run_article_rows.append(
+            (
+                run_id,
+                article_id,
+                label,
+                cluster_id,
+                probability,
+            )
+        )
 
     if link_rows:
         with conn.cursor() as cur:
@@ -355,6 +392,27 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
                 ON CONFLICT DO NOTHING
                 """,
                 link_rows,
+            )
+
+    if run_article_rows:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO clustering_run_articles (
+                    run_id,
+                    article_id,
+                    cluster_label,
+                    cluster_id,
+                    probability
+                )
+                VALUES %s
+                ON CONFLICT (run_id, article_id) DO UPDATE
+                SET cluster_label = EXCLUDED.cluster_label,
+                    cluster_id = EXCLUDED.cluster_id,
+                    probability = EXCLUDED.probability
+                """,
+                run_article_rows,
             )
 
     return {
