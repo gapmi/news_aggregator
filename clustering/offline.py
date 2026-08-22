@@ -432,6 +432,8 @@ def update_run_success(
     largest_cluster_ratio,
     noise_ratio,
     max_per_source,
+    emergent_topic_count=0,
+    emergent_assigned_article_count=0,
 ):
     with conn.cursor() as cur:
         cur.execute(
@@ -445,7 +447,9 @@ def update_run_success(
                 largest_cluster_size = %s,
                 largest_cluster_ratio = %s,
                 noise_ratio = %s,
-                max_per_source = %s
+                max_per_source = %s,
+                emergent_topic_count = %s,
+                emergent_assigned_article_count = %s
             WHERE id = %s
             """,
             (
@@ -457,6 +461,8 @@ def update_run_success(
                 largest_cluster_ratio,
                 noise_ratio,
                 max_per_source,
+                emergent_topic_count,
+                emergent_assigned_article_count,
                 run_id,
             ),
         )
@@ -471,6 +477,8 @@ def update_run_degraded(
     largest_cluster_ratio,
     noise_ratio,
     max_per_source,
+    emergent_topic_count=0,
+    emergent_assigned_article_count=0,
 ):
     with conn.cursor() as cur:
         cur.execute(
@@ -484,7 +492,9 @@ def update_run_degraded(
                 largest_cluster_size = %s,
                 largest_cluster_ratio = %s,
                 noise_ratio = %s,
-                max_per_source = %s
+                max_per_source = %s,
+                emergent_topic_count = %s,
+                emergent_assigned_article_count = %s
             WHERE id = %s
             """,
             (
@@ -496,6 +506,8 @@ def update_run_degraded(
                 largest_cluster_ratio,
                 noise_ratio,
                 max_per_source,
+                emergent_topic_count,
+                emergent_assigned_article_count,
                 run_id,
             ),
         )
@@ -628,6 +640,8 @@ def run_clustering(
             largest_cluster_ratio=largest_cluster_ratio,
             noise_ratio=noise_ratio,
             max_per_source=max_per_source,
+            emergent_topic_count=emergent_result["emergent_topic_count"],
+            emergent_assigned_article_count=emergent_result["assigned_article_count"],
         )
 
         conn.commit()
