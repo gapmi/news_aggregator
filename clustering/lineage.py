@@ -209,7 +209,8 @@ def save_lineage(conn, matches: list[dict[str, Any]]) -> int:
                 article_overlap_count,
                 parent_size,
                 child_size,
-                score
+                score,
+                link_type
             ) VALUES (
                 %(parent_run_id)s,
                 %(child_run_id)s,
@@ -220,7 +221,8 @@ def save_lineage(conn, matches: list[dict[str, Any]]) -> int:
                 %(article_overlap_count)s,
                 %(parent_size)s,
                 %(child_size)s,
-                %(score)s
+                %(score)s,
+                'continuation'
             )
             ON CONFLICT (parent_cluster_id, child_cluster_id) DO UPDATE
             SET centroid_similarity = EXCLUDED.centroid_similarity,
@@ -229,6 +231,7 @@ def save_lineage(conn, matches: list[dict[str, Any]]) -> int:
                 parent_size = EXCLUDED.parent_size,
                 child_size = EXCLUDED.child_size,
                 score = EXCLUDED.score,
+                link_type = EXCLUDED.link_type,
                 matched_at = now()
             """,
             matches,

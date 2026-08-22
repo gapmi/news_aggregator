@@ -255,6 +255,8 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
         return {"cluster_count": 0, "cluster_ids": []}
 
     cluster_insert_rows = []
+    total_non_noise = sum(len(grouped[label]) for label in ordered_labels)
+
     for label in ordered_labels:
         items = grouped[label]
         cluster_rows = [item[0] for item in items]
@@ -267,14 +269,41 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
             centroid=centroid,
         )
 
+        distances = np.linalg.norm(cluster_vectors - centroid, axis=1)
+        mean_distance = float(distances.mean()) if len(distances) else 0.0
+        quality_score = float(1.0 / (1.0 + mean_distance))
+
+        published_values = [
+            row.get("published")
+            for row in cluster_rows
+            if row.get("published") is not None
+        ]
+        first_seen_at = min(published_values) if published_values else None
+        last_seen_at = max(published_values) if published_values else None
+
+        cluster_size = len(cluster_rows)
+        cluster_share = (cluster_size / total_non_noise) if total_non_noise > 0 else 0.0
+        is_oversized = bool(cluster_size >= 40 or cluster_share >= 0.06)
+
         cluster_insert_rows.append(
             (
                 run_id,
                 label,
-                len(cluster_rows),
+                cluster_size,
                 representative["id"],
                 representative["title"],
                 centroid,
+                "batch",
+                None,
+                None,
+                None,
+                quality_score,
+                is_oversized,
+                False,
+                0,
+                None,
+                first_seen_at,
+                last_seen_at,
             )
         )
 
@@ -289,7 +318,18 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
                 size,
                 representative_article_id,
                 representative_title,
-                centroid
+                centroid,
+                origin_type,
+                origin_emergent_topic_id,
+                origin_sector_id,
+                parent_cluster_id,
+                quality_score,
+                is_oversized,
+                has_sectors,
+                visible_sector_count,
+                largest_sector_ratio,
+                first_seen_at,
+                last_seen_at
             )
             VALUES %s
             RETURNING id, label

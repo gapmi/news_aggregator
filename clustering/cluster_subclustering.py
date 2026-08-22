@@ -48,6 +48,7 @@ def _load_cluster_articles_for_run(conn, run_id: int) -> dict[int, list[dict]]:
                 c.size AS cluster_size,
                 a.id AS article_id,
                 a.title,
+                a.source,
                 a.embedding
             FROM clusters c
             JOIN cluster_articles ca ON ca.cluster_id = c.id
@@ -70,6 +71,7 @@ def _load_cluster_articles_for_run(conn, run_id: int) -> dict[int, list[dict]]:
                 "cluster_size": int(row["cluster_size"]),
                 "article_id": int(row["article_id"]),
                 "title": row["title"],
+                "source": row["source"],
                 "embedding": embedding,
             }
         )
@@ -140,6 +142,19 @@ def save_cluster_subclusters_for_run(
         ):
             summary["skipped_parent_count"] += 1
             summary["unassigned_article_count"] += n
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE clusters
+                    SET has_sectors = false,
+                        visible_sector_count = 0,
+                        largest_sector_ratio = NULL,
+                        is_oversized = %s
+                    WHERE id = %s
+                    """,
+                    (bool(parent_size >= 40), cluster_id),
+                )
             continue
 
         X = np.vstack([item["embedding"] for item in items]).astype(np.float32)
@@ -162,6 +177,19 @@ def save_cluster_subclusters_for_run(
 
         if not grouped:
             summary["unassigned_article_count"] += n
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE clusters
+                    SET has_sectors = false,
+                        visible_sector_count = 0,
+                        largest_sector_ratio = NULL,
+                        is_oversized = %s
+                    WHERE id = %s
+                    """,
+                    (bool(parent_size >= 40), cluster_id),
+                )
             continue
 
         summary["cluster_count_subclustered"] += 1
@@ -174,6 +202,24 @@ def save_cluster_subclusters_for_run(
             member_vectors = np.vstack([items[i]["embedding"] for i in member_indices]).astype(np.float32)
             centroid = _compute_centroid(member_vectors)
             representative, _member_distances = _choose_representative(member_items, member_vectors, centroid)
+
+            probabilities_local = []
+            for idx in member_indices:
+                if probabilities is not None and np.isfinite(probabilities[idx]):
+                    probabilities_local.append(float(probabilities[idx]))
+
+            mean_probability = (
+                float(np.mean(probabilities_local))
+                if probabilities_local
+                else None
+            )
+
+            source_values = {
+                item.get("source")
+                for item in member_items
+                if item.get("source")
+            }
+
             local_subcluster_payloads.append(
                 {
                     "run_id": run_id,
@@ -185,6 +231,10 @@ def save_cluster_subclusters_for_run(
                     "representative_title": representative["title"],
                     "centroid": centroid,
                     "member_indices": member_indices,
+                    "quality_score": mean_probability,
+                    "promotion_candidate": False,
+                    "promoted_cluster_id": None,
+                    "source_count": len(source_values),
                 }
             )
 
@@ -200,7 +250,11 @@ def save_cluster_subclusters_for_run(
                     is_noise,
                     representative_article_id,
                     representative_title,
-                    centroid
+                    centroid,
+                    quality_score,
+                    promotion_candidate,
+                    promoted_cluster_id,
+                    source_count
                 )
                 VALUES %s
                 RETURNING id, cluster_id, label
@@ -215,6 +269,10 @@ def save_cluster_subclusters_for_run(
                         row["representative_article_id"],
                         row["representative_title"],
                         row["centroid"],
+                        row["quality_score"],
+                        row["promotion_candidate"],
+                        row["promoted_cluster_id"],
+                        row["source_count"],
                     )
                     for row in local_subcluster_payloads
                 ],
@@ -278,6 +336,51 @@ def save_cluster_subclusters_for_run(
                         outlier_score,
                     )
                 )
+
+        assigned_counts_by_subcluster = defaultdict(int)
+        for row in current_cluster_article_rows:
+            assigned_subcluster_id = row[0]
+            assigned_counts_by_subcluster[assigned_subcluster_id] += 1
+
+        visible_subclusters = []
+        for payload in local_subcluster_payloads:
+            label = payload["label"]
+            subcluster_id = subcluster_id_by_label[label]
+            assigned_count = assigned_counts_by_subcluster.get(subcluster_id, 0)
+            if assigned_count > 0:
+                visible_subclusters.append(
+                    {
+                        "subcluster_id": subcluster_id,
+                        "assigned_count": assigned_count,
+                    }
+                )
+
+        visible_sector_count = len(visible_subclusters)
+        largest_sector_ratio = (
+            max((p["assigned_count"] / parent_size) for p in visible_subclusters)
+            if visible_subclusters and parent_size > 0
+            else None
+        )
+        has_sectors = visible_sector_count >= 2
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE clusters
+                SET has_sectors = %s,
+                    visible_sector_count = %s,
+                    largest_sector_ratio = %s,
+                    is_oversized = %s
+                WHERE id = %s
+                """,
+                (
+                    has_sectors,
+                    visible_sector_count,
+                    largest_sector_ratio,
+                    bool(parent_size >= 40),
+                    cluster_id,
+                ),
+            )
 
         summary["subcluster_count"] += len(local_subcluster_payloads)
         assigned_here = len(current_cluster_article_rows)
