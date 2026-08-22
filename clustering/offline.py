@@ -511,7 +511,7 @@ def update_run_degraded(
                 run_id,
             ),
         )
-
+        
 def update_run_failed(conn, run_id):
     with conn.cursor() as cur:
         cur.execute(
