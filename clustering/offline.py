@@ -434,6 +434,8 @@ def update_run_success(
     max_per_source,
     emergent_topic_count=0,
     emergent_assigned_article_count=0,
+    subcluster_count=0,
+    subcluster_assigned_article_count=0,
 ):
     with conn.cursor() as cur:
         cur.execute(
@@ -449,7 +451,9 @@ def update_run_success(
                 noise_ratio = %s,
                 max_per_source = %s,
                 emergent_topic_count = %s,
-                emergent_assigned_article_count = %s
+                emergent_assigned_article_count = %s,
+                subcluster_count = %s,
+                subcluster_assigned_article_count = %s
             WHERE id = %s
             """,
             (
@@ -463,6 +467,8 @@ def update_run_success(
                 max_per_source,
                 emergent_topic_count,
                 emergent_assigned_article_count,
+                subcluster_count,
+                subcluster_assigned_article_count,
                 run_id,
             ),
         )
@@ -479,6 +485,8 @@ def update_run_degraded(
     max_per_source,
     emergent_topic_count=0,
     emergent_assigned_article_count=0,
+    subcluster_count=0,
+    subcluster_assigned_article_count=0,
 ):
     with conn.cursor() as cur:
         cur.execute(
@@ -494,7 +502,9 @@ def update_run_degraded(
                 noise_ratio = %s,
                 max_per_source = %s,
                 emergent_topic_count = %s,
-                emergent_assigned_article_count = %s
+                emergent_assigned_article_count = %s,
+                subcluster_count = %s,
+                subcluster_assigned_article_count = %s
             WHERE id = %s
             """,
             (
@@ -508,10 +518,12 @@ def update_run_degraded(
                 max_per_source,
                 emergent_topic_count,
                 emergent_assigned_article_count,
+                subcluster_count,
+                subcluster_assigned_article_count,
                 run_id,
             ),
         )
-        
+
 def update_run_failed(conn, run_id):
     with conn.cursor() as cur:
         cur.execute(
@@ -642,6 +654,8 @@ def run_clustering(
             max_per_source=max_per_source,
             emergent_topic_count=emergent_result["emergent_topic_count"],
             emergent_assigned_article_count=emergent_result["assigned_article_count"],
+            subcluster_count=subcluster_result["subcluster_count"],
+            subcluster_assigned_article_count=subcluster_result["assigned_article_count"],
         )
 
         conn.commit()
