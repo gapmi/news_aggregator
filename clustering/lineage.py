@@ -485,10 +485,25 @@ def main():
             sim_weight=args.sim_weight,
             overlap_weight=args.overlap_weight,
         )
-
         matches = select_mutual_best(candidates)
 
+        emergent_candidates = build_emergent_candidates(
+            conn=conn,
+            parent_run_id=run_pair.parent_run_id,
+            child_run_id=run_pair.child_run_id,
+            min_similarity=args.min_similarity,
+            _legacy_min_overlap_ratio=args.min_overlap_ratio,
+            sim_weight=args.sim_weight,
+            overlap_weight=args.overlap_weight,
+        )
+        emergent_matches = select_mutual_best_emergent(emergent_candidates)
+
         log.info("Candidates=%s, final_matches=%s", len(candidates), len(matches))
+        log.info(
+            "Emergent candidates=%s, emergent_final_matches=%s",
+            len(emergent_candidates),
+            len(emergent_matches),
+        )
 
         if args.dry_run:
             conn.rollback()
@@ -502,21 +517,21 @@ def main():
                     row["article_overlap_count"],
                     row["score"],
                 )
+            for row in emergent_matches[:20]:
+                log.info(
+                    "EMERGENT MATCH parent=%s child=%s sim=%.4f overlap=%.4f overlap_count=%s score=%.4f",
+                    row["parent_topic_id"],
+                    row["child_topic_id"],
+                    row["centroid_similarity"],
+                    row["article_overlap_ratio"],
+                    row["article_overlap_count"],
+                    row["score"],
+                )
             return
 
         delete_existing_lineage(conn, run_pair.parent_run_id, run_pair.child_run_id)
         inserted = save_lineage(conn, matches)
-        emergent_candidates = build_emergent_candidates(
-            conn=conn,
-            parent_run_id=run_pair.parent_run_id,
-            child_run_id=run_pair.child_run_id,
-            min_similarity=args.min_similarity,
-            _legacy_min_overlap_ratio=args.min_overlap_ratio,
-            sim_weight=args.sim_weight,
-            overlap_weight=args.overlap_weight,
-        )
-
-        emergent_matches = select_mutual_best_emergent(emergent_candidates)
+        emergent_inserted = save_emergent_lineage(conn, emergent_matches)
 
         log.info(
             "Emergent candidates=%s, emergent_final_matches=%s",
