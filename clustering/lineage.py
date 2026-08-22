@@ -240,6 +240,194 @@ def save_lineage(conn, matches: list[dict[str, Any]]) -> int:
 
     return len(matches)
 
+def build_emergent_candidates(
+    conn,
+    parent_run_id: int,
+    child_run_id: int,
+    min_similarity: float,
+    _legacy_min_overlap_ratio: float,
+    sim_weight: float,
+    overlap_weight: float,
+) -> list[dict[str, Any]]:
+    sql = """
+    WITH parent_topics AS (
+        SELECT
+            et.id,
+            et.run_id,
+            et.size,
+            et.representative_article_id
+        FROM emergent_topics et
+        WHERE et.run_id = %(parent_run_id)s
+          AND et.status = 'emergent'
+          AND et.representative_article_id IS NOT NULL
+    ),
+    child_topics AS (
+        SELECT
+            et.id,
+            et.run_id,
+            et.size,
+            et.representative_article_id
+        FROM emergent_topics et
+        WHERE et.run_id = %(child_run_id)s
+          AND et.status = 'emergent'
+          AND et.representative_article_id IS NOT NULL
+    ),
+    topic_overlaps AS (
+        SELECT
+            pta.emergent_topic_id AS parent_topic_id,
+            cta.emergent_topic_id AS child_topic_id,
+            COUNT(*)::int AS overlap_count
+        FROM emergent_topic_articles pta
+        JOIN emergent_topic_articles cta
+          ON cta.article_id = pta.article_id
+        WHERE pta.run_id = %(parent_run_id)s
+          AND cta.run_id = %(child_run_id)s
+        GROUP BY pta.emergent_topic_id, cta.emergent_topic_id
+    )
+    SELECT
+        p.run_id AS parent_run_id,
+        c.run_id AS child_run_id,
+        p.id AS parent_topic_id,
+        c.id AS child_topic_id,
+        p.size AS parent_size,
+        c.size AS child_size,
+        1 - (pa.embedding <=> ca.embedding) AS centroid_similarity,
+        COALESCE(o.overlap_count, 0) AS article_overlap_count,
+        COALESCE(o.overlap_count, 0)::double precision
+            / LEAST(p.size, c.size)::double precision AS article_overlap_ratio,
+        (
+            %(sim_weight)s * (1 - (pa.embedding <=> ca.embedding)) +
+            %(overlap_weight)s * (
+                COALESCE(o.overlap_count, 0)::double precision
+                / LEAST(p.size, c.size)::double precision
+            )
+        ) AS score
+    FROM parent_topics p
+    JOIN articles pa
+      ON pa.id = p.representative_article_id
+     AND pa.embedding IS NOT NULL
+    CROSS JOIN child_topics c
+    JOIN articles ca
+      ON ca.id = c.representative_article_id
+     AND ca.embedding IS NOT NULL
+    LEFT JOIN topic_overlaps o
+      ON o.parent_topic_id = p.id
+     AND o.child_topic_id = c.id
+    WHERE (1 - (pa.embedding <=> ca.embedding)) >= %(min_similarity)s
+    ORDER BY
+        parent_topic_id,
+        score DESC,
+        article_overlap_count DESC,
+        child_size DESC,
+        child_topic_id
+    """
+
+    params = {
+        "parent_run_id": parent_run_id,
+        "child_run_id": child_run_id,
+        "min_similarity": min_similarity,
+        "sim_weight": sim_weight,
+        "overlap_weight": overlap_weight,
+    }
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return list(cur.fetchall())
+
+
+def select_mutual_best_emergent(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_by_parent: dict[int, dict[str, Any]] = {}
+    for row in candidates:
+        parent_id = row["parent_topic_id"]
+        current = best_by_parent.get(parent_id)
+        if current is None or (
+            row["score"],
+            row["article_overlap_count"],
+            row["child_size"],
+            -row["child_topic_id"],
+        ) > (
+            current["score"],
+            current["article_overlap_count"],
+            current["child_size"],
+            -current["child_topic_id"],
+        ):
+            best_by_parent[parent_id] = row
+
+    best_by_child: dict[int, dict[str, Any]] = {}
+    for row in best_by_parent.values():
+        child_id = row["child_topic_id"]
+        current = best_by_child.get(child_id)
+        if current is None or (
+            row["score"],
+            row["article_overlap_count"],
+            row["parent_size"],
+            -row["parent_topic_id"],
+        ) > (
+            current["score"],
+            current["article_overlap_count"],
+            current["parent_size"],
+            -current["parent_topic_id"],
+        ):
+            best_by_child[child_id] = row
+
+    return sorted(
+        best_by_child.values(),
+        key=lambda x: (x["parent_topic_id"], x["child_topic_id"]),
+    )
+
+
+def save_emergent_lineage(conn, matches: list[dict[str, Any]]) -> int:
+    if not matches:
+        return 0
+
+    with conn.cursor() as cur:
+        psycopg2.extras.execute_batch(
+            cur,
+            """
+            INSERT INTO emergent_topic_lineage (
+                parent_run_id,
+                child_run_id,
+                parent_topic_id,
+                child_topic_id,
+                centroid_similarity,
+                article_overlap_ratio,
+                article_overlap_count,
+                parent_size,
+                child_size,
+                score,
+                link_type,
+                matched_at
+            ) VALUES (
+                %(parent_run_id)s,
+                %(child_run_id)s,
+                %(parent_topic_id)s,
+                %(child_topic_id)s,
+                %(centroid_similarity)s,
+                %(article_overlap_ratio)s,
+                %(article_overlap_count)s,
+                %(parent_size)s,
+                %(child_size)s,
+                %(score)s,
+                'continuation',
+                now()
+            )
+            ON CONFLICT (parent_topic_id, child_topic_id) DO UPDATE
+            SET parent_run_id = EXCLUDED.parent_run_id,
+                child_run_id = EXCLUDED.child_run_id,
+                centroid_similarity = EXCLUDED.centroid_similarity,
+                article_overlap_ratio = EXCLUDED.article_overlap_ratio,
+                article_overlap_count = EXCLUDED.article_overlap_count,
+                parent_size = EXCLUDED.parent_size,
+                child_size = EXCLUDED.child_size,
+                score = EXCLUDED.score,
+                link_type = EXCLUDED.link_type,
+                matched_at = EXCLUDED.matched_at
+            """,
+            matches,
+            page_size=100,
+        )
+
+    return len(matches)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -318,8 +506,31 @@ def main():
 
         delete_existing_lineage(conn, run_pair.parent_run_id, run_pair.child_run_id)
         inserted = save_lineage(conn, matches)
+        emergent_candidates = build_emergent_candidates(
+            conn=conn,
+            parent_run_id=run_pair.parent_run_id,
+            child_run_id=run_pair.child_run_id,
+            min_similarity=args.min_similarity,
+            _legacy_min_overlap_ratio=args.min_overlap_ratio,
+            sim_weight=args.sim_weight,
+            overlap_weight=args.overlap_weight,
+        )
+
+        emergent_matches = select_mutual_best_emergent(emergent_candidates)
+
+        log.info(
+            "Emergent candidates=%s, emergent_final_matches=%s",
+            len(emergent_candidates),
+            len(emergent_matches),
+        )
+
+        emergent_inserted = save_emergent_lineage(conn, emergent_matches)
         conn.commit()
-        log.info("Saved %s lineage rows", inserted)
+        log.info(
+            "Saved %s cluster lineage rows and %s emergent lineage rows",
+            inserted,
+            emergent_inserted,
+        )
 
     except Exception:
         conn.rollback()
