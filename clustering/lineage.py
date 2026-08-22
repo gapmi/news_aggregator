@@ -533,13 +533,6 @@ def main():
         inserted = save_lineage(conn, matches)
         emergent_inserted = save_emergent_lineage(conn, emergent_matches)
 
-        log.info(
-            "Emergent candidates=%s, emergent_final_matches=%s",
-            len(emergent_candidates),
-            len(emergent_matches),
-        )
-
-        emergent_inserted = save_emergent_lineage(conn, emergent_matches)
         conn.commit()
         log.info(
             "Saved %s cluster lineage rows and %s emergent lineage rows",
