@@ -46,7 +46,7 @@ def _load_noise_articles_for_run(conn, run_id: int) -> list[dict]:
                 a.title,
                 a.source,
                 a.embedding,
-                a.published_at
+                a.published AS published_at
             FROM clustering_run_articles cra
             JOIN articles a ON a.id = cra.article_id
             WHERE cra.run_id = %s
@@ -215,8 +215,8 @@ def save_emergent_topics_for_run(
             if item.get("published_at") is not None
         ]
 
-        first_seen_at = min(timestamps) if timestamps else datetime.now(timezone.utc)
-        last_seen_at = max(timestamps) if timestamps else datetime.now(timezone.utc)
+        first_seen_at = min(timestamps) if timestamps else None
+        last_seen_at = max(timestamps) if timestamps else None
 
         mean_probability = _safe_mean(probabilities_local)
         promotion_score = _promotion_score(
