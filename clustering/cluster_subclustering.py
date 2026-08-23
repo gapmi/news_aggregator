@@ -7,11 +7,16 @@ import numpy as np
 import psycopg2.extras
 from psycopg2.extras import execute_values
 
-MIN_SUBCLUSTER_PARENT_SIZE = 10
+
+MIN_SUBCLUSTER_PARENT_SIZE = 80
+SUBCLUSTER_MIN_CLUSTER_SIZE = 12
+SUBCLUSTER_MIN_SAMPLES = 6
+MIN_SECTOR_ASSIGNED_ARTICLES = 12
+MIN_SECTOR_PARENT_SHARE = 0.015
+MIN_SECTOR_QUALITY_SCORE = 0.90
+MAX_SECTORS_PER_CLUSTER = 6
 SECTOR_MAX_VISIBLE_COUNT = 8
 SECTOR_MIN_MEDIAN_SIZE = 8
-SUBCLUSTER_MIN_CLUSTER_SIZE = 8
-SUBCLUSTER_MIN_SAMPLES = 5
 SUBCLUSTER_SELECTION_METHOD = "leaf"
 SUBCLUSTER_MIN_PROBABILITY = 0.35
 SUBCLUSTER_MAX_DISTANCE_QUANTILE = 0.90
@@ -210,11 +215,7 @@ def save_cluster_subclusters_for_run(
                 if probabilities is not None and np.isfinite(probabilities[idx]):
                     probabilities_local.append(float(probabilities[idx]))
 
-            mean_probability = (
-                float(np.mean(probabilities_local))
-                if probabilities_local
-                else None
-            )
+            mean_probability = float(np.mean(probabilities_local)) if probabilities_local else None
 
             source_values = {
                 item.get("source")
@@ -241,7 +242,7 @@ def save_cluster_subclusters_for_run(
             )
 
         with conn.cursor() as cur:
-            inserted = execute_values(
+            execute_values(
                 cur,
                 """
                 INSERT INTO cluster_subclusters (
@@ -278,8 +279,8 @@ def save_cluster_subclusters_for_run(
                     )
                     for row in local_subcluster_payloads
                 ],
-                fetch=True,
             )
+            inserted = cur.fetchall()
 
         subcluster_id_by_label = {
             int(returned_label): int(subcluster_id)
@@ -332,7 +333,7 @@ def save_cluster_subclusters_for_run(
                         cluster_id,
                         item["article_id"],
                         run_id,
-                        probability is not None and probability >= 0.5,
+                        bool(probability is not None and probability >= 0.5),
                         distance,
                         probability,
                         outlier_score,
@@ -349,15 +350,32 @@ def save_cluster_subclusters_for_run(
             label = payload["label"]
             subcluster_id = subcluster_id_by_label[label]
             assigned_count = assigned_counts_by_subcluster.get(subcluster_id, 0)
-            if assigned_count > 0:
-                visible_subclusters.append(
-                    {
-                        "subcluster_id": subcluster_id,
-                        "assigned_count": assigned_count,
-                    }
-                )
 
-        visible_sector_count = len(visible_subclusters)
+            if assigned_count < MIN_SECTOR_ASSIGNED_ARTICLES:
+                continue
+
+            if parent_size > 0 and (assigned_count / parent_size) < MIN_SECTOR_PARENT_SHARE:
+                continue
+
+            quality_score = payload["quality_score"]
+            if quality_score is not None and quality_score < MIN_SECTOR_QUALITY_SCORE:
+                continue
+
+            visible_subclusters.append(
+                {
+                    "subcluster_id": subcluster_id,
+                    "assigned_count": assigned_count,
+                    "quality_score": quality_score,
+                }
+            )
+
+        visible_subclusters.sort(
+            key=lambda x: (x["assigned_count"], x["quality_score"] or 0.0),
+            reverse=True,
+        )
+        visible_subclusters = visible_subclusters[:MAX_SECTORS_PER_CLUSTER]
+        visible_sector_count = min(len(visible_subclusters), SECTOR_MAX_VISIBLE_COUNT)
+
         largest_sector_ratio = (
             max((p["assigned_count"] / parent_size) for p in visible_subclusters)
             if visible_subclusters and parent_size > 0

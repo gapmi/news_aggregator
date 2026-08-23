@@ -1,18 +1,19 @@
 import argparse
 import json
 import os
-import hdbscan
+from collections import Counter, defaultdict
 
+import hdbscan
 import numpy as np
 import psycopg2
 import psycopg2.extras
-
-from collections import Counter, defaultdict
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
+
 from clustering.cluster_naming import upsert_cluster_names_for_run
 from clustering.cluster_subclustering import save_cluster_subclusters_for_run
 from clustering.emergent_topics import save_emergent_topics_for_run
+
 
 DEFAULT_WINDOW_HOURS = 168
 DEFAULT_LIMIT = 3000
@@ -104,6 +105,9 @@ def parse_embedding(value):
     if hasattr(value, "to_list"):
         return np.array(value.to_list(), dtype=np.float32)
 
+    if hasattr(value, "tolist"):
+        return np.array(value.tolist(), dtype=np.float32)
+
     return np.array(value, dtype=np.float32)
 
 
@@ -189,7 +193,6 @@ def validate_clustering_quality(
     max_largest_cluster_ratio: float = DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
 ) -> str | None:
     counts = Counter(labels.tolist())
-
     non_noise_counts = [count for label, count in counts.items() if int(label) != -1]
 
     cluster_count = len(non_noise_counts)
@@ -212,6 +215,7 @@ def validate_clustering_quality(
         )
 
     return None
+
 
 def choose_representative(cluster_rows, cluster_vectors, centroid=None):
     if centroid is None:
@@ -243,7 +247,7 @@ def save_run_start(conn, window_hours, min_cluster_size, min_samples):
     return run_id
 
 
-def save_clusters_and_links(conn, run_id, rows, X, labels):
+def save_clusters_and_links(conn, run_id, rows, X, labels, probabilities=None):
     grouped = defaultdict(list)
 
     for idx, (row, label) in enumerate(zip(rows, labels)):
@@ -252,7 +256,6 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
         grouped[int(label)].append((row, X[idx], idx))
 
     ordered_labels = sorted(grouped.keys())
-
     cluster_id_by_label = {}
 
     if ordered_labels:
@@ -337,13 +340,12 @@ def save_clusters_and_links(conn, run_id, rows, X, labels):
                 """,
                 cluster_insert_rows,
             )
-            for cluster_id, label in cur.fetchall():
+            returned_rows = cur.fetchall()
+            for cluster_id, label in returned_rows:
                 cluster_id_by_label[int(label)] = int(cluster_id)
 
     link_rows = []
     run_article_rows = []
-
-    probabilities = None
 
     for idx, (row, label) in enumerate(zip(rows, labels)):
         label = int(label)
@@ -473,6 +475,7 @@ def update_run_success(
             ),
         )
 
+
 def update_run_degraded(
     conn,
     run_id,
@@ -524,6 +527,7 @@ def update_run_degraded(
             ),
         )
 
+
 def update_run_failed(conn, run_id):
     with conn.cursor() as cur:
         cur.execute(
@@ -570,6 +574,7 @@ def run_clustering(
         prediction_data=True,
     )
     labels = clusterer.fit_predict(X)
+    probabilities = getattr(clusterer, "probabilities_", None)
 
     counts = Counter(labels.tolist())
     noise_count = counts.get(-1, 0)
@@ -620,7 +625,14 @@ def run_clustering(
             min_samples=min_samples,
         )
 
-        save_result = save_clusters_and_links(conn, run_id, rows, X, labels)
+        save_result = save_clusters_and_links(
+            conn,
+            run_id,
+            rows,
+            X,
+            labels,
+            probabilities=probabilities,
+        )
         saved_cluster_count = save_result["cluster_count"]
         saved_cluster_ids = save_result["cluster_ids"]
 
