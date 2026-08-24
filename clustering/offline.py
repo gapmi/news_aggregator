@@ -11,7 +11,6 @@ from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
 from clustering.cluster_naming import upsert_cluster_names_for_run
-from clustering.cluster_subclustering import save_cluster_subclusters_for_run
 from clustering.emergent_topics import save_emergent_topics_for_run
 
 
@@ -636,14 +635,11 @@ def run_clustering(
         saved_cluster_count = save_result["cluster_count"]
         saved_cluster_ids = save_result["cluster_ids"]
 
-        subcluster_result = save_cluster_subclusters_for_run(
-            conn,
-            run_id,
-            trigger_parent_size=parent_subcluster_trigger_size,
-            trigger_parent_ratio=parent_subcluster_trigger_ratio,
-            total_article_count=len(rows),
-        )
-        print(f"subcluster_result={subcluster_result}")
+        subcluster_result = {
+            "subcluster_count": 0,
+            "assigned_article_count": 0,
+        }
+        print("subcluster_result=disabled")
 
         emergent_result = save_emergent_topics_for_run(conn, run_id)
         print(f"emergent_result={emergent_result}")
