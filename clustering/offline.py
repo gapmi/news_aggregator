@@ -13,10 +13,6 @@ from psycopg2.extras import execute_values
 from clustering.cluster_naming import upsert_cluster_names_for_run
 from clustering.emergent_topics import save_emergent_topics_for_run
 
-
-DEFAULT_WINDOW_HOURS = 168
-DEFAULT_LIMIT = 3000
-
 # Первичный clustering: компактные однородные тематические кластеры.
 # Большие смешанные темы не должны склеиваться в единый кластер.
 DEFAULT_WINDOW_HOURS = 168
