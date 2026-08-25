@@ -41,11 +41,11 @@ def get_last_two_completed_runs(conn) -> RunPair | None:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT id, started_at, finished_at
+            SELECT id
             FROM clustering_runs
-            WHERE status IN ('success', 'completed')
+            WHERE status IN ('success', 'completed', 'degraded')
               AND finished_at IS NOT NULL
-            ORDER BY started_at DESC
+            ORDER BY id DESC
             LIMIT 2
             """
         )
@@ -54,9 +54,10 @@ def get_last_two_completed_runs(conn) -> RunPair | None:
     if len(rows) < 2:
         return None
 
-    child_run_id = rows[0]["id"]
-    parent_run_id = rows[1]["id"]
-    return RunPair(parent_run_id=parent_run_id, child_run_id=child_run_id)
+    return RunPair(
+        parent_run_id=int(rows[1]["id"]),
+        child_run_id=int(rows[0]["id"]),
+    )
 
 
 def delete_existing_lineage(conn, parent_run_id: int, child_run_id: int) -> None:

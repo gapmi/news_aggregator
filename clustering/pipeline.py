@@ -31,9 +31,10 @@ from clustering.lineage import (
 from clustering.observability import (
     PipelineContext,
     PipelineStageError,
-    emit_stage_event,
     capture_pipeline_error,
+    emit_stage_event,
 )
+
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +54,9 @@ def start_pipeline_run(conn, job_type: str, meta: dict | None = None) -> int:
             ),
         )
         row = cur.fetchone()
+
     conn.commit()
-    return row[0]
+    return int(row[0])
 
 
 def finish_pipeline_run(
@@ -71,7 +73,7 @@ def finish_pipeline_run(
             UPDATE pipeline_runs
             SET
                 status = %s,
-                finished_at = now(),
+                finished_at = NOW(),
                 related_run_id = %s,
                 error = %s,
                 meta = COALESCE(meta, '{}'::jsonb) || %s::jsonb
@@ -85,6 +87,7 @@ def finish_pipeline_run(
                 pipeline_run_id,
             ),
         )
+
     conn.commit()
 
 
@@ -92,7 +95,6 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--max-per-source", type=int, default=DEFAULT_MAX_PER_SOURCE)
-
     parser.add_argument("--window-hours", type=int, default=DEFAULT_WINDOW_HOURS)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--min-cluster-size", type=int, default=DEFAULT_MIN_CLUSTER_SIZE)
@@ -109,7 +111,11 @@ def parse_args():
         ),
     )
     parser.add_argument("--sim-weight", type=float, default=DEFAULT_SCORE_SIM_WEIGHT)
-    parser.add_argument("--overlap-weight", type=float, default=DEFAULT_SCORE_OVERLAP_WEIGHT)
+    parser.add_argument(
+        "--overlap-weight",
+        type=float,
+        default=DEFAULT_SCORE_OVERLAP_WEIGHT,
+    )
 
     parser.add_argument("--skip-lineage", action="store_true")
     parser.add_argument("--dry-run-lineage", action="store_true")
@@ -123,33 +129,36 @@ def parse_args():
         type=float,
         default=DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
     )
-    parser.add_argument(
-        "--skip-quality-gate",
-        action="store_true",
-    )
+    parser.add_argument("--skip-quality-gate", action="store_true")
 
     return parser.parse_args()
 
 
 def get_previous_success_run_id(conn, current_run_id: int) -> int | None:
+    """
+    Возвращает единственного допустимого родителя для lineage:
+    ближайший завершённый run с меньшим id.
+
+    Нельзя выбирать parent по anchor run, по окну графа или по similarity.
+    Нельзя использовать только started_at: он может быть NULL, совпадать
+    у нескольких запусков или не отражать фактический порядок вставки.
+    """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT prev.id
-            FROM clustering_runs current
-            JOIN clustering_runs prev
-              ON prev.started_at < current.started_at
-            WHERE current.id = %s
-              AND prev.status IN ('success', 'completed')
-              AND prev.finished_at IS NOT NULL
-            ORDER BY prev.started_at DESC, prev.id DESC
+            SELECT id
+            FROM clustering_runs
+            WHERE id < %s
+              AND status IN ('success', 'completed', 'degraded')
+              AND finished_at IS NOT NULL
+            ORDER BY id DESC
             LIMIT 1
             """,
             (current_run_id,),
         )
         row = cur.fetchone()
 
-    return row["id"] if row else None
+    return int(row["id"]) if row else None
 
 
 def rebuild_lineage_for_new_run(
@@ -164,11 +173,14 @@ def rebuild_lineage_for_new_run(
     parent_run_id = get_previous_success_run_id(conn, current_run_id)
 
     if parent_run_id is None:
-        log.info("No previous successful run found for current_run_id=%s", current_run_id)
+        log.info(
+            "No previous completed run found; lineage skipped for child_run_id=%s",
+            current_run_id,
+        )
         return 0
 
     log.info(
-        "Building lineage parent_run_id=%s child_run_id=%s",
+        "Building strict adjacent lineage parent_run_id=%s child_run_id=%s",
         parent_run_id,
         current_run_id,
     )
@@ -185,12 +197,21 @@ def rebuild_lineage_for_new_run(
 
     matches = select_mutual_best(candidates)
 
-    log.info("Lineage candidates=%s final_matches=%s", len(candidates), len(matches))
+    log.info(
+        "Lineage candidates=%s final_matches=%s parent_run_id=%s child_run_id=%s",
+        len(candidates),
+        len(matches),
+        parent_run_id,
+        current_run_id,
+    )
 
     if dry_run:
         for row in matches[:20]:
             log.info(
-                "DRY RUN MATCH parent=%s child=%s sim=%.4f overlap=%.4f overlap_count=%s score=%.4f",
+                (
+                    "DRY RUN MATCH parent=%s child=%s sim=%.4f "
+                    "overlap=%.4f overlap_count=%s score=%.4f"
+                ),
                 row["parent_cluster_id"],
                 row["child_cluster_id"],
                 row["centroid_similarity"],
@@ -200,11 +221,15 @@ def rebuild_lineage_for_new_run(
             )
         return len(matches)
 
-    delete_existing_lineage(conn, parent_run_id, current_run_id)
+    delete_existing_lineage(
+        conn,
+        parent_run_id=parent_run_id,
+        child_run_id=current_run_id,
+    )
     inserted = save_lineage(conn, matches)
 
     log.info(
-        "Saved lineage rows=%s parent_run_id=%s child_run_id=%s",
+        "Saved strict adjacent lineage rows=%s parent_run_id=%s child_run_id=%s",
         inserted,
         parent_run_id,
         current_run_id,
@@ -219,7 +244,6 @@ def main():
         format="%(message)s",
         force=True,
     )
-
     log.setLevel(logging.INFO)
 
     args = parse_args()
@@ -468,6 +492,7 @@ def main():
 
         if args.dry_run_lineage:
             conn.rollback()
+
             emit_stage_event(
                 "INFO",
                 pipeline_ctx,
@@ -479,6 +504,7 @@ def main():
                 radial_cluster_count=radial_result["cluster_count"],
                 radial_point_count=radial_result["point_count"],
             )
+
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
@@ -493,6 +519,7 @@ def main():
             )
         else:
             conn.commit()
+
             emit_stage_event(
                 "INFO",
                 pipeline_ctx,
@@ -503,6 +530,7 @@ def main():
                 radial_cluster_count=radial_result["cluster_count"],
                 radial_point_count=radial_result["point_count"],
             )
+
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
@@ -515,7 +543,7 @@ def main():
                 },
             )
 
-    except Exception as e:
+    except Exception as exc:
         failed_run_id = locals().get("run_id")
 
         try:
@@ -531,8 +559,8 @@ def main():
             ),
             PipelineStageError(
                 "PIPELINE_FAILED",
-                str(e),
-                error_type=type(e).__name__,
+                str(exc),
+                error_type=type(exc).__name__,
                 retryable=False,
                 extra={
                     "pipeline_run_id": pipeline_run_id,
@@ -547,15 +575,18 @@ def main():
                 pipeline_run_id,
                 status="failed",
                 related_run_id=failed_run_id,
-                error=str(e),
+                error=str(exc),
                 meta={
                     "failed_step": "pipeline",
                     "error_code": "PIPELINE_FAILED",
-                    "error_type": type(e).__name__,
+                    "error_type": type(exc).__name__,
                 },
             )
         except Exception:
-            log.exception("Failed to update pipeline_runs for pipeline_run_id=%s", pipeline_run_id)
+            log.exception(
+                "Failed to update pipeline_runs for pipeline_run_id=%s",
+                pipeline_run_id,
+            )
 
         raise
 
