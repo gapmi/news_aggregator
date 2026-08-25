@@ -19,17 +19,23 @@ DEFAULT_LIMIT = 3000
 
 # Первичный clustering: компактные однородные тематические кластеры.
 # Большие смешанные темы не должны склеиваться в единый кластер.
-DEFAULT_MIN_CLUSTER_SIZE = 8
-DEFAULT_MIN_SAMPLES = 2
-DEFAULT_CLUSTER_SELECTION_METHOD = "eom"
-DEFAULT_CLUSTER_SELECTION_EPSILON = 0.03
+DEFAULT_WINDOW_HOURS = 168
+DEFAULT_LIMIT = 3000
 
+# Первичная кластеризация: формируем компактные тематические кластеры
+# сразу, без вторичных секторов и subclustering.
+DEFAULT_MIN_CLUSTER_SIZE = 12
+DEFAULT_MIN_SAMPLES = 1
+DEFAULT_CLUSTER_SELECTION_METHOD = "leaf"
+DEFAULT_CLUSTER_SELECTION_EPSILON = 0.0
+
+# Quality gate.
 DEFAULT_MIN_VALID_CLUSTER_COUNT = 10
-DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.30
+DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.15
 
 DEFAULT_MAX_PER_SOURCE = 300
 
-# Сектора отключены, значения оставлены для CLI-совместимости.
+# Сектора отключены. Константы сохранены лишь для обратной совместимости CLI.
 DEFAULT_PARENT_SUBCLUSTER_TRIGGER_SIZE = 120
 DEFAULT_PARENT_SUBCLUSTER_TRIGGER_RATIO = 0.10
 
