@@ -128,6 +128,16 @@ def parse_embedding(value):
 
     return np.array(value, dtype=np.float32)
 
+def l2_normalize_embeddings(X: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+
+    if np.any(norms == 0):
+        zero_count = int(np.sum(norms == 0))
+        raise ValueError(
+            f"Cannot normalize embeddings: found {zero_count} zero-norm vectors"
+        )
+
+    return (X / norms).astype(np.float32)
 
 def load_batch(
     window_hours=DEFAULT_WINDOW_HOURS,
@@ -193,9 +203,27 @@ def load_batch(
     embeddings = [parse_embedding(row["embedding"]) for row in rows]
     X = np.vstack(embeddings).astype(np.float32)
 
+    if np.isnan(X).any():
+        raise ValueError("Cannot cluster embeddings containing NaN values")
+
+    if not np.isfinite(X).all():
+        raise ValueError("Cannot cluster embeddings containing non-finite values")
+
+    raw_norms = np.linalg.norm(X, axis=1)
+
     print(f"shape={X.shape}")
     print(f"dtype={X.dtype}")
     print(f"has_nan={np.isnan(X).any()}")
+    print(f"embedding_norm_min={raw_norms.min():.6f}")
+    print(f"embedding_norm_mean={raw_norms.mean():.6f}")
+    print(f"embedding_norm_max={raw_norms.max():.6f}")
+
+    X = l2_normalize_embeddings(X)
+
+    normalized_norms = np.linalg.norm(X, axis=1)
+    print(f"normalized_norm_min={normalized_norms.min():.6f}")
+    print(f"normalized_norm_mean={normalized_norms.mean():.6f}")
+    print(f"normalized_norm_max={normalized_norms.max():.6f}")
 
     return rows, X
 
