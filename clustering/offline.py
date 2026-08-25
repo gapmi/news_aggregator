@@ -16,16 +16,28 @@ from clustering.emergent_topics import save_emergent_topics_for_run
 
 DEFAULT_WINDOW_HOURS = 168
 DEFAULT_LIMIT = 3000
-DEFAULT_MIN_CLUSTER_SIZE = 8
-DEFAULT_MIN_SAMPLES = 2
-DEFAULT_CLUSTER_SELECTION_METHOD = "eom"
-DEFAULT_CLUSTER_SELECTION_EPSILON = 0.12
+
+# Первичный clustering: компактные однородные тематические кластеры.
+# Большие смешанные темы не должны склеиваться в единый кластер.
+DEFAULT_MIN_CLUSTER_SIZE = 12
+DEFAULT_MIN_SAMPLES = 5
+DEFAULT_CLUSTER_SELECTION_METHOD = "leaf"
+DEFAULT_CLUSTER_SELECTION_EPSILON = 0.0
 
 DEFAULT_MIN_VALID_CLUSTER_COUNT = 7
-DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.50
+DEFAULT_MAX_LARGEST_CLUSTER_RATIO = 0.35
 DEFAULT_MAX_PER_SOURCE = 300
+
+# Сектора отключены, значения оставлены для CLI-совместимости.
 DEFAULT_PARENT_SUBCLUSTER_TRIGGER_SIZE = 120
 DEFAULT_PARENT_SUBCLUSTER_TRIGGER_RATIO = 0.10
+
+#| Параметр                  | Было | Стало | Зачем                                                                                |
+#| ------------------------- | ---- | ----- | ------------------------------------------------------------------------------------ |
+#| min_cluster_size          | 8    | 12    | Не создаёт совсем мелкие случайные темы                                              |
+#| min_samples               | 2    | 5     | Требует более плотной семантической группы; пограничные статьи чаще становятся noise |
+#| cluster_selection_method  | eom  | leaf  | Разделяет широкую тему на более однородные базовые кластеры                          |
+#| cluster_selection_epsilon | 0.12 | 0.0   | Не даёт HDBSCAN склеивать соседние кластеры                                          |
 
 
 def get_conn():
