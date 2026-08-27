@@ -195,10 +195,55 @@ def _find_pattern_matches(
     value: str,
     patterns: dict[str, str],
 ) -> list[str]:
+    """
+    Finds forbidden prompt terms while allowing the mandatory negative suffix:
+    'no text, no logos, no watermark'.
+
+    The function does not treat explicit negative safety instructions as a
+    request to generate those elements.
+    """
+    normalized = _normalize_whitespace(value).lower()
+
+    normalized = re.sub(
+        r"\bno\s+(?:readable\s+)?text\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bno\s+logos?\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bno\s+watermarks?\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bno\s+captions?\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bno\s+subtitles?\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bno\s+headlines?\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\bno\s+(?:news\s+)?ticker\b",
+        "",
+        normalized,
+    )
+
     matches: list[str] = []
 
     for label, pattern in patterns.items():
-        if re.search(pattern, value, flags=re.IGNORECASE):
+        if re.search(pattern, normalized, flags=re.IGNORECASE):
             matches.append(label)
 
     return matches
