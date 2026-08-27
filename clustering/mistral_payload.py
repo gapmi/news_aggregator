@@ -8,8 +8,11 @@ import psycopg2.extras
 
 
 DEFAULT_TARGET_DURATION_SECONDS = 120
-DEFAULT_MAX_TOPICS = 8
+DEFAULT_MAX_TOPICS = 6
 DEFAULT_HEADLINES_PER_TOPIC = 3
+DEFAULT_MAX_NEW_TOPICS = 2
+DEFAULT_MAX_REFRAMED_TOPICS = 2
+DEFAULT_MAX_CONTINUING_TOPICS = 5
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -40,7 +43,10 @@ def get_previous_completed_run_id(
     child_run_id: int,
 ) -> int | None:
     """
-    Returns the immediately preceding completed run by numeric run ID.
+    Возвращает ближайший предыдущий завершённый run.
+
+    Для сравнения используется только соседняя пара run по ID:
+    parent_run_id < child_run_id, status завершён, finished_at задан.
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -120,6 +126,12 @@ def _load_clusters_with_headlines(
     run_id: int,
     headlines_per_topic: int,
 ) -> list[dict[str, Any]]:
+    """
+    Загружает кластеры run, их отображаемые имена и последние headline samples.
+
+    Headline samples — исходный редакционный материал для модели.
+    Они не считаются подтверждёнными фактами сами по себе.
+    """
     sql = """
     SELECT
         c.id,
@@ -147,10 +159,11 @@ def _load_clusters_with_headlines(
     LEFT JOIN LATERAL (
         SELECT ARRAY_AGG(
             sample.title
-            ORDER BY sample.published DESC NULLS LAST
+            ORDER BY sample.published DESC NULLS LAST, sample.id DESC
         ) AS headline_samples
         FROM (
             SELECT
+                a.id,
                 a.title,
                 a.published
             FROM cluster_articles ca
@@ -265,7 +278,16 @@ def _build_transitions(
     child_clusters: list[dict[str, Any]],
     lineage_edges: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    parent_by_id = {cluster["cluster_id"]: cluster for cluster in parent_clusters}
+    """
+    Вычисляет тип перехода в Python, а не поручает это LLM.
+
+    Модель получает уже готовые, проверяемые категории:
+    new, disappeared, continuation, reframed.
+    """
+    parent_by_id = {
+        cluster["cluster_id"]: cluster
+        for cluster in parent_clusters
+    }
 
     incoming_by_child: dict[int, list[dict[str, Any]]] = defaultdict(list)
     outgoing_by_parent: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -311,27 +333,27 @@ def _build_transitions(
 
         if parent is None:
             raise ValueError(
-                "Lineage edge references a parent cluster outside the selected parent run: "
-                f"parent_cluster_id={primary_edge['parent_cluster_id']}"
+                "Lineage edge references a parent cluster outside the selected "
+                f"parent run: parent_cluster_id={primary_edge['parent_cluster_id']}"
             )
 
         parent_name = parent["topic_name"]
         child_name = child["topic_name"]
+
         name_changed = (
             _normalize_topic_name(parent_name)
             != _normalize_topic_name(child_name)
         )
 
         transition_type = "reframed" if name_changed else "continuation"
-        trend = _trend_from_sizes(
-            primary_edge["parent_size"],
-            primary_edge["child_size"],
-        )
 
         transitions.append(
             {
                 "transition_type": transition_type,
-                "trend": trend,
+                "trend": _trend_from_sizes(
+                    primary_edge["parent_size"],
+                    primary_edge["child_size"],
+                ),
                 "topic_name": child_name,
                 "parent_topic_name": parent_name,
                 "parent_cluster_id": parent["cluster_id"],
@@ -376,7 +398,7 @@ def _build_transitions(
             }
         )
 
-    priority = {
+    sort_priority = {
         "new": 0,
         "reframed": 1,
         "continuation": 2,
@@ -386,7 +408,7 @@ def _build_transitions(
     return sorted(
         transitions,
         key=lambda item: (
-            priority[item["transition_type"]],
+            sort_priority[item["transition_type"]],
             -int(item.get("child_size", item.get("parent_size", 0))),
             item["topic_name"],
         ),
@@ -398,78 +420,111 @@ def _select_editorial_topics(
     max_topics: int,
 ) -> list[dict[str, Any]]:
     """
-    Возвращает небольшой редакционный набор тем для короткого видео.
+    Возвращает набор тем для формата A: News agenda recap.
 
-    Цель: не позволять всем маленьким new-кластерам вытеснить крупные
-    продолжения, по которым есть заметная динамика и содержательные заголовки.
+    Формат ориентирован на текущую новостную повестку, поэтому:
+    - disappeared topics не включаются в видео-сценарий;
+    - максимум две новые темы;
+    - максимум две reframed темы;
+    - основой служат крупные continuations с заметной динамикой;
+    - короткий ролик ограничен максимум шестью темами.
+
+    Полный набор transitions остаётся в payload для аналитики, но Mistral
+    должен строить основной сценарий по editorial_topics и agenda_summary.
     """
     max_topics = min(max_topics, DEFAULT_MAX_TOPICS)
 
     def topic_size(item: dict[str, Any]) -> int:
         return int(item.get("child_size", item.get("parent_size", 0)))
 
-    def size_delta_abs(item: dict[str, Any]) -> int:
+    def absolute_delta(item: dict[str, Any]) -> int:
         return abs(int(item.get("size_delta", 0)))
 
     def headline_count(item: dict[str, Any]) -> int:
         return len(item.get("headline_samples") or [])
 
-    def is_eligible(item: dict[str, Any]) -> bool:
+    def quality_score(item: dict[str, Any]) -> float:
+        return float(item.get("quality_score") or 0.0)
+
+    def eligible_for_agenda(item: dict[str, Any]) -> bool:
         transition_type = item["transition_type"]
         size = topic_size(item)
 
         if headline_count(item) < 2:
             return False
 
-        if transition_type == "new":
-            return size >= 10
-
-        if transition_type == "reframed":
-            return size >= 10
-
         if transition_type == "disappeared":
+            return False
+
+        if transition_type == "new":
             return size >= 12
 
+        if transition_type == "reframed":
+            return size >= 15
+
         if transition_type == "continuation":
-            return size >= 12 or size_delta_abs(item) >= 5
+            return size >= 12 or absolute_delta(item) >= 5
 
         return False
 
-    def score(item: dict[str, Any]) -> tuple[int, int, int, float, str]:
-        transition_type = item["transition_type"]
-        size = topic_size(item)
-        delta = size_delta_abs(item)
-        quality_score = float(item.get("quality_score") or 0.0)
-
-        transition_bonus = {
-            "new": 5,
-            "reframed": 4,
-            "disappeared": 3,
-            "continuation": 2,
-        }.get(transition_type, 0)
-
+    def continuing_score(item: dict[str, Any]) -> tuple[int, int, float, str]:
         return (
-            size + delta + transition_bonus,
-            delta,
-            size,
-            quality_score,
+            topic_size(item) + absolute_delta(item),
+            absolute_delta(item),
+            quality_score(item),
             item["topic_name"],
         )
 
-    eligible = [item for item in transitions if is_eligible(item)]
+    def new_score(item: dict[str, Any]) -> tuple[int, float, str]:
+        return (
+            topic_size(item),
+            quality_score(item),
+            item["topic_name"],
+        )
 
-    grouped: dict[str, list[dict[str, Any]]] = {
-        "new": [],
-        "reframed": [],
-        "disappeared": [],
-        "continuation": [],
-    }
+    def reframed_score(item: dict[str, Any]) -> tuple[int, int, float, str]:
+        return (
+            topic_size(item) + absolute_delta(item),
+            absolute_delta(item),
+            quality_score(item),
+            item["topic_name"],
+        )
 
-    for item in eligible:
-        grouped[item["transition_type"]].append(item)
+    eligible = [
+        item
+        for item in transitions
+        if eligible_for_agenda(item)
+    ]
 
-    for items in grouped.values():
-        items.sort(key=score, reverse=True)
+    continuations = sorted(
+        [
+            item
+            for item in eligible
+            if item["transition_type"] == "continuation"
+        ],
+        key=continuing_score,
+        reverse=True,
+    )
+
+    new_topics = sorted(
+        [
+            item
+            for item in eligible
+            if item["transition_type"] == "new"
+        ],
+        key=new_score,
+        reverse=True,
+    )
+
+    reframed_topics = sorted(
+        [
+            item
+            for item in eligible
+            if item["transition_type"] == "reframed"
+        ],
+        key=reframed_score,
+        reverse=True,
+    )
 
     selected: list[dict[str, Any]] = []
     selected_keys: set[tuple[str, int | None, int | None]] = set()
@@ -481,7 +536,7 @@ def _select_editorial_topics(
             item.get("child_cluster_id"),
         )
 
-    def add_from_group(items: list[dict[str, Any]], limit: int) -> None:
+    def add_items(items: list[dict[str, Any]], limit: int) -> None:
         added = 0
 
         for item in items:
@@ -497,16 +552,28 @@ def _select_editorial_topics(
             selected_keys.add(item_key)
             added += 1
 
-    # Сохраняем новизну, но не разрешаем ей заполнить весь ролик.
-    add_from_group(grouped["new"], limit=2)
-    add_from_group(grouped["reframed"], limit=2)
-    add_from_group(grouped["disappeared"], limit=2)
+    # Сначала ядро повестки: наиболее крупные актуальные продолжения.
+    add_items(continuations, DEFAULT_MAX_CONTINUING_TOPICS)
 
-    # Основная часть новостного обзора: устойчивые темы с масштабом и динамикой.
-    add_from_group(grouped["continuation"], limit=5)
+    # Затем — ограниченное число заметных новых тем.
+    add_items(new_topics, DEFAULT_MAX_NEW_TOPICS)
 
-    # Если набор оказался короче лимита, добираем лучшие доступные темы.
-    for item in sorted(eligible, key=score, reverse=True):
+    # Затем — устойчивые темы, изменившие название/формулировку.
+    add_items(reframed_topics, DEFAULT_MAX_REFRAMED_TOPICS)
+
+    # Если набор ещё не заполнен, добираем оставшиеся темы по общему score.
+    remaining = sorted(
+        eligible,
+        key=lambda item: (
+            topic_size(item) + absolute_delta(item),
+            absolute_delta(item),
+            quality_score(item),
+            item["topic_name"],
+        ),
+        reverse=True,
+    )
+
+    for item in remaining:
         if len(selected) >= max_topics:
             break
 
@@ -521,6 +588,142 @@ def _select_editorial_topics(
     return selected
 
 
+def _build_agenda_summary(
+    previous_run: dict[str, Any],
+    current_run: dict[str, Any],
+    transitions: list[dict[str, Any]],
+    editorial_topics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Формирует короткий структурированный контекст для сценарной LLM.
+
+    Это не текст для диктора. Это уже рассчитанные backend-данные,
+    на основе которых Mistral пишет нейтральный news agenda recap.
+    """
+    def transition_size(item: dict[str, Any]) -> int:
+        return int(item.get("child_size", item.get("parent_size", 0)))
+
+    continuing = [
+        item
+        for item in transitions
+        if item["transition_type"] == "continuation"
+    ]
+    newly_visible = [
+        item
+        for item in transitions
+        if item["transition_type"] == "new"
+    ]
+    reframed = [
+        item
+        for item in transitions
+        if item["transition_type"] == "reframed"
+    ]
+    disappeared = [
+        item
+        for item in transitions
+        if item["transition_type"] == "disappeared"
+    ]
+
+    growing = sorted(
+        [
+            item
+            for item in continuing + reframed
+            if item.get("trend") == "growing"
+        ],
+        key=lambda item: (
+            int(item.get("size_delta", 0)),
+            transition_size(item),
+        ),
+        reverse=True,
+    )
+
+    declining = sorted(
+        [
+            item
+            for item in continuing + reframed
+            if item.get("trend") == "declining"
+        ],
+        key=lambda item: (
+            int(item.get("size_delta", 0)),
+            -transition_size(item),
+        ),
+    )
+
+    largest_current_topics = sorted(
+        [
+            item
+            for item in transitions
+            if item["transition_type"] != "disappeared"
+        ],
+        key=transition_size,
+        reverse=True,
+    )
+
+    return {
+        "previous_run_id": previous_run["run_id"],
+        "current_run_id": current_run["run_id"],
+        "previous_article_count": previous_run["article_count"],
+        "current_article_count": current_run["article_count"],
+        "previous_cluster_count": previous_run["cluster_count"],
+        "current_cluster_count": current_run["cluster_count"],
+        "article_count_delta": (
+            current_run["article_count"] - previous_run["article_count"]
+        ),
+        "cluster_count_delta": (
+            current_run["cluster_count"] - previous_run["cluster_count"]
+        ),
+        "previous_noise_ratio": previous_run["noise_ratio"],
+        "current_noise_ratio": current_run["noise_ratio"],
+        "noise_ratio_delta": (
+            current_run["noise_ratio"] - previous_run["noise_ratio"]
+        ),
+        "continuing_topic_count": len(continuing),
+        "newly_visible_topic_count": len(newly_visible),
+        "reframed_topic_count": len(reframed),
+        "disappeared_topic_count": len(disappeared),
+        "top_growing_topics": [
+            {
+                "topic_name": item["topic_name"],
+                "parent_topic_name": item.get("parent_topic_name"),
+                "parent_size": item.get("parent_size"),
+                "child_size": item.get("child_size"),
+                "size_delta": item.get("size_delta"),
+            }
+            for item in growing[:3]
+        ],
+        "top_declining_topics": [
+            {
+                "topic_name": item["topic_name"],
+                "parent_topic_name": item.get("parent_topic_name"),
+                "parent_size": item.get("parent_size"),
+                "child_size": item.get("child_size"),
+                "size_delta": item.get("size_delta"),
+            }
+            for item in declining[:3]
+        ],
+        "largest_current_topics": [
+            {
+                "topic_name": item["topic_name"],
+                "topic_size": transition_size(item),
+                "transition_type": item["transition_type"],
+                "trend": item["trend"],
+            }
+            for item in largest_current_topics[:5]
+        ],
+        "notable_new_topics": [
+            {
+                "topic_name": item["topic_name"],
+                "topic_size": transition_size(item),
+            }
+            for item in newly_visible[:3]
+        ],
+        "editorial_topic_names": [
+            item["topic_name"]
+            for item in editorial_topics
+        ],
+    }
+
+
 def build_mistral_video_payload(
     conn,
     child_run_id: int,
@@ -529,15 +732,15 @@ def build_mistral_video_payload(
     headlines_per_topic: int = DEFAULT_HEADLINES_PER_TOPIC,
 ) -> dict[str, Any]:
     """
-    Формирует фактологический входной payload для Mistral.
+    Формирует входной payload для Mistral.
 
-    Функция не вызывает Mistral API и не изменяет БД.
+    Функция:
+    - не вызывает Mistral API;
+    - не записывает и не изменяет данные в БД;
+    - должна вызываться после сохранения cluster_names и cluster_lineage;
+    - должна вызываться после commit транзакции pipeline.
 
-    Вызывать только после того, как:
-    1. текущий run сохранён со статусом success/completed/degraded;
-    2. cluster_names сохранены;
-    3. lineage parent -> child сохранён;
-    4. транзакция с lineage успешно закоммичена.
+    Результат передаётся в функцию формирования Mistral HTTP request.
     """
     if target_duration_seconds < 30:
         raise ValueError("target_duration_seconds must be at least 30 seconds")
@@ -555,8 +758,9 @@ def build_mistral_video_payload(
         "target_duration_seconds": target_duration_seconds,
         "language": "en",
         "platform": "youtube",
-        "format": "neutral news coverage recap",
+        "format": "news agenda recap",
         "voice_style": "calm professional news narrator",
+        "audience": "international English-speaking audience",
         "aspect_ratio": "16:9",
         "visual_style": "cinematic editorial news documentary",
     }
@@ -566,6 +770,8 @@ def build_mistral_video_payload(
         "do_not_invent_facts": True,
         "do_not_interpret_metrics_without_thresholds": True,
         "headlines_are_source_material_not_verified_claims": True,
+        "use_editorial_topics_as_primary_script_source": True,
+        "disappeared_topics_are_context_only": True,
         "max_topics_sent_to_model": min(max_topics, DEFAULT_MAX_TOPICS),
     }
 
@@ -583,6 +789,7 @@ def build_mistral_video_payload(
             },
             "previous_run": None,
             "current_run": child_run,
+            "agenda_summary": None,
             "topic_transitions": [],
             "editorial_topics": [],
             "constraints": constraints,
@@ -615,6 +822,12 @@ def build_mistral_video_payload(
         transitions=transitions,
         max_topics=max_topics,
     )
+    agenda_summary = _build_agenda_summary(
+        previous_run=parent_run,
+        current_run=child_run,
+        transitions=transitions,
+        editorial_topics=editorial_topics,
+    )
 
     return {
         "project": {
@@ -631,6 +844,7 @@ def build_mistral_video_payload(
         },
         "previous_run": parent_run,
         "current_run": child_run,
+        "agenda_summary": agenda_summary,
         "topic_transitions": transitions,
         "editorial_topics": editorial_topics,
         "constraints": constraints,
