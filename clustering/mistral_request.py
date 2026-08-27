@@ -45,6 +45,22 @@ FACTUAL RULES:
     "major escalation", or similar sensational wording.
 12. Use neutral wording and preserve uncertainty when the input is uncertain.
 
+STRICT TOPIC-LABEL RULE:
+
+1. A topic_name is a clustering label, not a verified geographic, political,
+   institutional, or factual identifier.
+2. Never expand, translate, resolve, or guess abbreviations in topic_name.
+3. Never infer an entity from a partial token. For example, "Que" must not be
+   interpreted as Quebec, and a label mentioning a country must not be treated
+   as proof that the reporting came from that country.
+4. If headline samples do not consistently establish a specific topic, use only:
+   "coverage grouped under the topic label [topic_name]" or omit the topic from
+   the spoken narration.
+5. Do not say "media in [country]", "officials", "government", "authorities",
+   "rescue teams", or "regional response" unless those words or entities are
+   explicitly present and consistently supported in headline samples.
+6. Never use a cluster label alone as evidence for a factual claim.
+
 TOPIC RULES:
 
 1. A "growing" trend means the current topic size is larger than the prior
@@ -74,25 +90,19 @@ NARRATION RULES:
 10. Use approximately 2.3 to 2.7 English words per second.
 11. Do not include music or sound-effect instructions.
 
-VISUAL RULES:
+VISUAL SAFETY RULES:
 
-1. Each scene needs a visual_prompt suitable for an AI video generator or
-   editorial B-roll selection.
-2. Visuals must support, not duplicate, the narration.
-3. Use neutral editorial visuals when specifics are not fully supported:
-   generic newsroom, abstract world map, non-labeled trade routes, generic
-   government district, neutral city skyline, generic technology facility,
-   neutral environmental landscape, or abstract data motion.
-4. Do not request fake documentary footage.
-5. Do not request readable text, subtitles, captions, headlines, logos,
-   watermarks, UI panels, social posts, flags, or documents in visuals.
-6. Do not create identifiable real people unless they are explicitly present
-   in INPUT_JSON and necessary to state a supported fact.
-7. Use this consistent style in every visual prompt:
-   "cinematic editorial news documentary, restrained colors, natural lighting,
-   realistic camera movement, clean composition, 16:9, no text, no logos,
-   no watermark".
-8. Use exactly one central visual idea per scene.
+1. Do not generate realistic reenactments or documentary-looking footage of
+   real conflicts, military action, attacks, floods, disasters, rescues,
+   injuries, deaths, protests, elections, government meetings, intelligence
+   activity, or identifiable public figures.
+2. For sensitive, incomplete, or conflict-related topics, use only abstract
+   visuals: non-labeled maps, atmospheric landscapes without identifiable
+   locations, symbolic data motion, neutral newsroom interiors, or generic
+   non-documentary editorial imagery.
+3. Do not depict casualties, weapons, emergency workers, soldiers, destroyed
+   buildings, active rescue work, military vehicles, or identifiable officials.
+4. Do not imply the visual is authentic footage.
 
 OUTPUT RULES:
 
