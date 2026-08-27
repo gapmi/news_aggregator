@@ -6,6 +6,23 @@ import logging
 
 import psycopg2.extras
 
+from clustering.lineage import (
+    DEFAULT_MIN_OVERLAP_RATIO,
+    DEFAULT_MIN_SIMILARITY,
+    DEFAULT_SCORE_OVERLAP_WEIGHT,
+    DEFAULT_SCORE_SIM_WEIGHT,
+    build_candidates,
+    delete_existing_lineage,
+    save_lineage,
+    select_mutual_best,
+)
+from clustering.mistral_payload import build_mistral_video_payload
+from clustering.observability import (
+    PipelineContext,
+    PipelineStageError,
+    capture_pipeline_error,
+    emit_stage_event,
+)
 from clustering.offline import (
     DEFAULT_LIMIT,
     DEFAULT_MAX_LARGEST_CLUSTER_RATIO,
@@ -18,25 +35,11 @@ from clustering.offline import (
     run_clustering,
 )
 from clustering.radial_map import build_and_save_radial_maps_for_run
-from clustering.lineage import (
-    DEFAULT_MIN_OVERLAP_RATIO,
-    DEFAULT_MIN_SIMILARITY,
-    DEFAULT_SCORE_OVERLAP_WEIGHT,
-    DEFAULT_SCORE_SIM_WEIGHT,
-    build_candidates,
-    delete_existing_lineage,
-    save_lineage,
-    select_mutual_best,
-)
-from clustering.observability import (
-    PipelineContext,
-    PipelineStageError,
-    capture_pipeline_error,
-    emit_stage_event,
-)
 
 
 log = logging.getLogger(__name__)
+
+DEFAULT_VIDEO_TARGET_DURATION_SECONDS = 120
 
 
 def start_pipeline_run(conn, job_type: str, meta: dict | None = None) -> int:
@@ -97,7 +100,11 @@ def parse_args():
     parser.add_argument("--max-per-source", type=int, default=DEFAULT_MAX_PER_SOURCE)
     parser.add_argument("--window-hours", type=int, default=DEFAULT_WINDOW_HOURS)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
-    parser.add_argument("--min-cluster-size", type=int, default=DEFAULT_MIN_CLUSTER_SIZE)
+    parser.add_argument(
+        "--min-cluster-size",
+        type=int,
+        default=DEFAULT_MIN_CLUSTER_SIZE,
+    )
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
 
     parser.add_argument("--min-similarity", type=float, default=DEFAULT_MIN_SIMILARITY)
@@ -131,6 +138,18 @@ def parse_args():
     )
     parser.add_argument("--skip-quality-gate", action="store_true")
 
+    parser.add_argument(
+        "--video-target-duration-seconds",
+        type=int,
+        default=DEFAULT_VIDEO_TARGET_DURATION_SECONDS,
+        help="Target duration included in the Mistral video payload.",
+    )
+    parser.add_argument(
+        "--skip-mistral-payload",
+        action="store_true",
+        help="Do not build the Mistral video payload after a successful pipeline.",
+    )
+
     return parser.parse_args()
 
 
@@ -138,10 +157,6 @@ def get_previous_success_run_id(conn, current_run_id: int) -> int | None:
     """
     Возвращает единственного допустимого родителя для lineage:
     ближайший завершённый run с меньшим id.
-
-    Нельзя выбирать parent по anchor run, по окну графа или по similarity.
-    Нельзя использовать только started_at: он может быть NULL, совпадать
-    у нескольких запусков или не отражать фактический порядок вставки.
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -170,6 +185,12 @@ def rebuild_lineage_for_new_run(
     overlap_weight: float,
     dry_run: bool = False,
 ) -> int:
+    """
+    Создаёт lineage только между соседними completed runs.
+
+    Важно: функция не выполняет commit. Commit остаётся на уровне main(),
+    чтобы lineage и radial maps формировали одну атомарную pipeline-транзакцию.
+    """
     parent_run_id = get_previous_success_run_id(conn, current_run_id)
 
     if parent_run_id is None:
@@ -194,7 +215,6 @@ def rebuild_lineage_for_new_run(
         sim_weight=sim_weight,
         overlap_weight=overlap_weight,
     )
-
     matches = select_mutual_best(candidates)
 
     log.info(
@@ -251,6 +271,9 @@ def main():
     if abs((args.sim_weight + args.overlap_weight) - 1.0) > 1e-9:
         raise ValueError("sim-weight + overlap-weight must equal 1.0")
 
+    if args.video_target_duration_seconds < 30:
+        raise ValueError("video-target-duration-seconds must be at least 30")
+
     conn = get_conn()
     pipeline_run_id = start_pipeline_run(
         conn,
@@ -271,6 +294,8 @@ def main():
             "min_valid_cluster_count": args.min_valid_cluster_count,
             "max_largest_cluster_ratio": args.max_largest_cluster_ratio,
             "skip_quality_gate": args.skip_quality_gate,
+            "video_target_duration_seconds": args.video_target_duration_seconds,
+            "skip_mistral_payload": args.skip_mistral_payload,
         },
     )
 
@@ -300,6 +325,8 @@ def main():
         min_valid_cluster_count=args.min_valid_cluster_count,
         max_largest_cluster_ratio=args.max_largest_cluster_ratio,
         skip_quality_gate=args.skip_quality_gate,
+        video_target_duration_seconds=args.video_target_duration_seconds,
+        skip_mistral_payload=args.skip_mistral_payload,
     )
 
     try:
@@ -380,7 +407,10 @@ def main():
                 pipeline_run_id,
                 status="no_run",
                 related_run_id=None,
-                meta={"lineage_inserted": 0},
+                meta={
+                    "lineage_inserted": 0,
+                    "mistral_payload_built": False,
+                },
             )
             return
 
@@ -393,13 +423,18 @@ def main():
                 related_run_id=run_id,
                 lineage_skipped=True,
                 lineage_inserted=0,
+                mistral_payload_built=False,
             )
             finish_pipeline_run(
                 conn,
                 pipeline_run_id,
                 status="success",
                 related_run_id=run_id,
-                meta={"lineage_skipped": True, "lineage_inserted": 0},
+                meta={
+                    "lineage_skipped": True,
+                    "lineage_inserted": 0,
+                    "mistral_payload_built": False,
+                },
             )
             return
 
@@ -503,6 +538,7 @@ def main():
                 lineage_matches=inserted,
                 radial_cluster_count=radial_result["cluster_count"],
                 radial_point_count=radial_result["point_count"],
+                mistral_payload_built=False,
             )
 
             finish_pipeline_run(
@@ -515,33 +551,109 @@ def main():
                     "lineage_matches": inserted,
                     "radial_cluster_count": radial_result["cluster_count"],
                     "radial_point_count": radial_result["point_count"],
+                    "mistral_payload_built": False,
                 },
             )
-        else:
-            conn.commit()
+            return
+
+        conn.commit()
+
+        mistral_payload = None
+        mistral_payload_built = False
+        mistral_payload_parent_run_id = None
+        mistral_payload_topic_count = 0
+
+        if not args.skip_mistral_payload:
+            mistral_ctx = PipelineContext(
+                run_id=run_id,
+                stage="mistral_payload",
+                attempt=1,
+            )
 
             emit_stage_event(
                 "INFO",
-                pipeline_ctx,
-                "pipeline_finished",
+                mistral_ctx,
+                "mistral_payload_started",
                 pipeline_run_id=pipeline_run_id,
-                related_run_id=run_id,
-                lineage_inserted=inserted,
-                radial_cluster_count=radial_result["cluster_count"],
-                radial_point_count=radial_result["point_count"],
+                target_duration_seconds=args.video_target_duration_seconds,
             )
 
-            finish_pipeline_run(
-                conn,
-                pipeline_run_id,
-                status="success",
-                related_run_id=run_id,
-                meta={
-                    "lineage_inserted": inserted,
-                    "radial_cluster_count": radial_result["cluster_count"],
-                    "radial_point_count": radial_result["point_count"],
-                },
+            try:
+                mistral_payload = build_mistral_video_payload(
+                    conn=conn,
+                    child_run_id=run_id,
+                    target_duration_seconds=args.video_target_duration_seconds,
+                )
+            except Exception as exc:
+                capture_pipeline_error(
+                    mistral_ctx,
+                    PipelineStageError(
+                        "MISTRAL_PAYLOAD_BUILD_FAILED",
+                        str(exc),
+                        error_type=type(exc).__name__,
+                        retryable=False,
+                        extra={"pipeline_run_id": pipeline_run_id},
+                    ),
+                )
+                raise
+
+            mistral_payload_built = True
+            mistral_payload_parent_run_id = (
+                mistral_payload["analysis_context"].get("parent_run_id")
             )
+            mistral_payload_topic_count = len(
+                mistral_payload.get("editorial_topics", [])
+            )
+
+            log.info(
+                (
+                    "Mistral payload built: child_run_id=%s parent_run_id=%s "
+                    "topics=%s target_duration_seconds=%s"
+                ),
+                run_id,
+                mistral_payload_parent_run_id,
+                mistral_payload_topic_count,
+                args.video_target_duration_seconds,
+            )
+
+            emit_stage_event(
+                "INFO",
+                mistral_ctx,
+                "mistral_payload_finished",
+                pipeline_run_id=pipeline_run_id,
+                parent_run_id=mistral_payload_parent_run_id,
+                editorial_topic_count=mistral_payload_topic_count,
+                target_duration_seconds=args.video_target_duration_seconds,
+            )
+
+        emit_stage_event(
+            "INFO",
+            pipeline_ctx,
+            "pipeline_finished",
+            pipeline_run_id=pipeline_run_id,
+            related_run_id=run_id,
+            lineage_inserted=inserted,
+            radial_cluster_count=radial_result["cluster_count"],
+            radial_point_count=radial_result["point_count"],
+            mistral_payload_built=mistral_payload_built,
+            mistral_payload_topic_count=mistral_payload_topic_count,
+        )
+
+        finish_pipeline_run(
+            conn,
+            pipeline_run_id,
+            status="success",
+            related_run_id=run_id,
+            meta={
+                "lineage_inserted": inserted,
+                "radial_cluster_count": radial_result["cluster_count"],
+                "radial_point_count": radial_result["point_count"],
+                "mistral_payload_built": mistral_payload_built,
+                "mistral_payload_parent_run_id": mistral_payload_parent_run_id,
+                "mistral_payload_topic_count": mistral_payload_topic_count,
+                "video_target_duration_seconds": args.video_target_duration_seconds,
+            },
+        )
 
     except Exception as exc:
         failed_run_id = locals().get("run_id")
