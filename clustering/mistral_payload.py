@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -9,14 +8,8 @@ import psycopg2.extras
 
 
 DEFAULT_TARGET_DURATION_SECONDS = 120
-DEFAULT_MAX_TOPICS = 12
+DEFAULT_MAX_TOPICS = 8
 DEFAULT_HEADLINES_PER_TOPIC = 3
-
-
-@dataclass(frozen=True)
-class RunPair:
-    parent_run_id: int
-    child_run_id: int
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -46,6 +39,9 @@ def get_previous_completed_run_id(
     conn,
     child_run_id: int,
 ) -> int | None:
+    """
+    Returns the immediately preceding completed run by numeric run ID.
+    """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -149,8 +145,10 @@ def _load_clusters_with_headlines(
     LEFT JOIN cluster_names cn
       ON cn.cluster_id = c.id
     LEFT JOIN LATERAL (
-        SELECT ARRAY_AGG(sample.title ORDER BY sample.published DESC NULLS LAST)
-            AS headline_samples
+        SELECT ARRAY_AGG(
+            sample.title
+            ORDER BY sample.published DESC NULLS LAST
+        ) AS headline_samples
         FROM (
             SELECT
                 a.title,
@@ -268,7 +266,6 @@ def _build_transitions(
     lineage_edges: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     parent_by_id = {cluster["cluster_id"]: cluster for cluster in parent_clusters}
-    child_by_id = {cluster["cluster_id"]: cluster for cluster in child_clusters}
 
     incoming_by_child: dict[int, list[dict[str, Any]]] = defaultdict(list)
     outgoing_by_parent: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -295,6 +292,7 @@ def _build_transitions(
                     "parent_topic_names": [],
                     "headline_samples": child["headline_samples"],
                     "tags": child["tags"],
+                    "quality_score": child["quality_score"],
                 }
             )
             continue
@@ -308,7 +306,14 @@ def _build_transitions(
                 -edge["parent_cluster_id"],
             ),
         )
-        parent = parent_by_id[primary_edge["parent_cluster_id"]]
+
+        parent = parent_by_id.get(primary_edge["parent_cluster_id"])
+
+        if parent is None:
+            raise ValueError(
+                "Lineage edge references a parent cluster outside the selected parent run: "
+                f"parent_cluster_id={primary_edge['parent_cluster_id']}"
+            )
 
         parent_name = parent["topic_name"]
         child_name = child["topic_name"]
@@ -343,6 +348,7 @@ def _build_transitions(
                 "link_type": primary_edge["link_type"],
                 "headline_samples": child["headline_samples"],
                 "tags": child["tags"],
+                "quality_score": child["quality_score"],
                 "incoming_lineage_count": len(incoming),
                 "outgoing_lineage_count": len(
                     outgoing_by_parent.get(parent["cluster_id"], [])
@@ -366,6 +372,7 @@ def _build_transitions(
                 "child_cluster_ids": [],
                 "headline_samples": parent["headline_samples"],
                 "tags": parent["tags"],
+                "quality_score": parent["quality_score"],
             }
         )
 
@@ -391,54 +398,48 @@ def _select_editorial_topics(
     max_topics: int,
 ) -> list[dict[str, Any]]:
     """
-    Ограничиваем payload наиболее заметными темами.
-    Новые, переформулированные и исчезнувшие темы получают приоритет;
-    затем идут наиболее крупные продолжения.
+    Возвращает небольшой редакционный набор тем для короткого видео.
+
+    Цель: не позволять всем маленьким new-кластерам вытеснить крупные
+    продолжения, по которым есть заметная динамика и содержательные заголовки.
     """
-    priority = {
-        "new": 0,
-        "reframed": 1,
-        "disappeared": 2,
-        "continuation": 3,
-    }
-
-    ranked = sorted(
-        transitions,
-        key=lambda item: (
-            priority[item["transition_type"]],
-            -abs(int(item.get("size_delta", 0))),
-            -int(item.get("child_size", item.get("parent_size", 0))),
-            item["topic_name"],
-        ),
-    )
-
-    return ranked[:max_topics]
-
-
-def _select_editorial_topics(
-    transitions: list[dict[str, Any]],
-    max_topics: int,
-) -> list[dict[str, Any]]:
-    """
-    Отбирает темы для короткого новостного видеосценария.
-
-    Бизнес-правило: крупные продолжающиеся темы с заметной динамикой
-    не должны вытесняться небольшими новыми кластерами. В output
-    попадают только темы, для которых есть достаточно материала
-    для нейтральной редакционной формулировки.
-    """
-    max_topics = min(max_topics, 8)
+    max_topics = min(max_topics, DEFAULT_MAX_TOPICS)
 
     def topic_size(item: dict[str, Any]) -> int:
         return int(item.get("child_size", item.get("parent_size", 0)))
 
+    def size_delta_abs(item: dict[str, Any]) -> int:
+        return abs(int(item.get("size_delta", 0)))
+
     def headline_count(item: dict[str, Any]) -> int:
         return len(item.get("headline_samples") or [])
 
-    def editorial_score(item: dict[str, Any]) -> tuple[int, int, int, str]:
+    def is_eligible(item: dict[str, Any]) -> bool:
         transition_type = item["transition_type"]
         size = topic_size(item)
-        delta = abs(int(item.get("size_delta", 0)))
+
+        if headline_count(item) < 2:
+            return False
+
+        if transition_type == "new":
+            return size >= 10
+
+        if transition_type == "reframed":
+            return size >= 10
+
+        if transition_type == "disappeared":
+            return size >= 12
+
+        if transition_type == "continuation":
+            return size >= 12 or size_delta_abs(item) >= 5
+
+        return False
+
+    def score(item: dict[str, Any]) -> tuple[int, int, int, float, str]:
+        transition_type = item["transition_type"]
+        size = topic_size(item)
+        delta = size_delta_abs(item)
+        quality_score = float(item.get("quality_score") or 0.0)
 
         transition_bonus = {
             "new": 5,
@@ -451,29 +452,9 @@ def _select_editorial_topics(
             size + delta + transition_bonus,
             delta,
             size,
+            quality_score,
             item["topic_name"],
         )
-
-    def is_eligible(item: dict[str, Any]) -> bool:
-        transition_type = item["transition_type"]
-        size = topic_size(item)
-
-        if headline_count(item) < 2:
-            return False
-
-        if transition_type == "disappeared":
-            return size >= 12
-
-        if transition_type == "new":
-            return size >= 10
-
-        if transition_type == "reframed":
-            return size >= 10
-
-        if transition_type == "continuation":
-            return size >= 12 or abs(int(item.get("size_delta", 0))) >= 5
-
-        return False
 
     eligible = [item for item in transitions if is_eligible(item)]
 
@@ -485,64 +466,172 @@ def _select_editorial_topics(
     }
 
     for item in eligible:
-        grouped.setdefault(item["transition_type"], []).append(item)
+        grouped[item["transition_type"]].append(item)
 
     for items in grouped.values():
-        items.sort(key=editorial_score, reverse=True)
+        items.sort(key=score, reverse=True)
 
     selected: list[dict[str, Any]] = []
-    selected_ids: set[tuple[str, int | None, int | None]] = set()
+    selected_keys: set[tuple[str, int | None, int | None]] = set()
 
-    def add_items(items: list[dict[str, Any]], limit: int) -> None:
-        for item in items:
-            if len(selected) >= max_topics:
-                return
-
-            item_key = (
-                item["topic_name"],
-                item.get("parent_cluster_id"),
-                item.get("child_cluster_id"),
-            )
-
-            if item_key in selected_ids:
-                continue
-
-            selected.append(item)
-            selected_ids.add(item_key)
-
-            if sum(
-                1
-                for selected_item in selected
-                if selected_item["transition_type"] == item["transition_type"]
-            ) >= limit:
-                return
-
-    # Новизна важна, но ограничена: она не должна заполнить весь ролик.
-    add_items(grouped["new"], limit=2)
-    add_items(grouped["reframed"], limit=2)
-    add_items(grouped["disappeared"], limit=2)
-
-    # Основа ролика — крупнейшие и наиболее изменившиеся продолжения.
-    add_items(grouped["continuation"], limit=5)
-
-    # Если тематических категорий оказалось мало, добираем лучшие темы
-    # из общего списка, сохраняя max_topics.
-    remaining = sorted(eligible, key=editorial_score, reverse=True)
-
-    for item in remaining:
-        if len(selected) >= max_topics:
-            break
-
-        item_key = (
+    def identity(item: dict[str, Any]) -> tuple[str, int | None, int | None]:
+        return (
             item["topic_name"],
             item.get("parent_cluster_id"),
             item.get("child_cluster_id"),
         )
 
-        if item_key in selected_ids:
+    def add_from_group(items: list[dict[str, Any]], limit: int) -> None:
+        added = 0
+
+        for item in items:
+            if len(selected) >= max_topics or added >= limit:
+                return
+
+            item_key = identity(item)
+
+            if item_key in selected_keys:
+                continue
+
+            selected.append(item)
+            selected_keys.add(item_key)
+            added += 1
+
+    # Сохраняем новизну, но не разрешаем ей заполнить весь ролик.
+    add_from_group(grouped["new"], limit=2)
+    add_from_group(grouped["reframed"], limit=2)
+    add_from_group(grouped["disappeared"], limit=2)
+
+    # Основная часть новостного обзора: устойчивые темы с масштабом и динамикой.
+    add_from_group(grouped["continuation"], limit=5)
+
+    # Если набор оказался короче лимита, добираем лучшие доступные темы.
+    for item in sorted(eligible, key=score, reverse=True):
+        if len(selected) >= max_topics:
+            break
+
+        item_key = identity(item)
+
+        if item_key in selected_keys:
             continue
 
         selected.append(item)
-        selected_ids.add(item_key)
+        selected_keys.add(item_key)
 
     return selected
+
+
+def build_mistral_video_payload(
+    conn,
+    child_run_id: int,
+    target_duration_seconds: int = DEFAULT_TARGET_DURATION_SECONDS,
+    max_topics: int = DEFAULT_MAX_TOPICS,
+    headlines_per_topic: int = DEFAULT_HEADLINES_PER_TOPIC,
+) -> dict[str, Any]:
+    """
+    Формирует фактологический входной payload для Mistral.
+
+    Функция не вызывает Mistral API и не изменяет БД.
+
+    Вызывать только после того, как:
+    1. текущий run сохранён со статусом success/completed/degraded;
+    2. cluster_names сохранены;
+    3. lineage parent -> child сохранён;
+    4. транзакция с lineage успешно закоммичена.
+    """
+    if target_duration_seconds < 30:
+        raise ValueError("target_duration_seconds must be at least 30 seconds")
+
+    if max_topics < 1:
+        raise ValueError("max_topics must be at least 1")
+
+    if headlines_per_topic < 1:
+        raise ValueError("headlines_per_topic must be at least 1")
+
+    parent_run_id = get_previous_completed_run_id(conn, child_run_id)
+    child_run = _load_run(conn, child_run_id)
+
+    video_requirements = {
+        "target_duration_seconds": target_duration_seconds,
+        "language": "en",
+        "platform": "youtube",
+        "format": "neutral news coverage recap",
+        "voice_style": "calm professional news narrator",
+        "aspect_ratio": "16:9",
+        "visual_style": "cinematic editorial news documentary",
+    }
+
+    constraints = {
+        "must_use_only_input_data": True,
+        "do_not_invent_facts": True,
+        "do_not_interpret_metrics_without_thresholds": True,
+        "headlines_are_source_material_not_verified_claims": True,
+        "max_topics_sent_to_model": min(max_topics, DEFAULT_MAX_TOPICS),
+    }
+
+    if parent_run_id is None:
+        return {
+            "project": {
+                "project_name": "news_aggregator",
+                "language": "en",
+            },
+            "video_requirements": video_requirements,
+            "analysis_context": {
+                "comparison_available": False,
+                "child_run_id": child_run_id,
+                "reason": "No previous completed run exists for comparison.",
+            },
+            "previous_run": None,
+            "current_run": child_run,
+            "topic_transitions": [],
+            "editorial_topics": [],
+            "constraints": constraints,
+        }
+
+    parent_run = _load_run(conn, parent_run_id)
+
+    parent_clusters = _load_clusters_with_headlines(
+        conn=conn,
+        run_id=parent_run_id,
+        headlines_per_topic=headlines_per_topic,
+    )
+    child_clusters = _load_clusters_with_headlines(
+        conn=conn,
+        run_id=child_run_id,
+        headlines_per_topic=headlines_per_topic,
+    )
+    lineage_edges = _load_lineage_edges(
+        conn=conn,
+        parent_run_id=parent_run_id,
+        child_run_id=child_run_id,
+    )
+
+    transitions = _build_transitions(
+        parent_clusters=parent_clusters,
+        child_clusters=child_clusters,
+        lineage_edges=lineage_edges,
+    )
+    editorial_topics = _select_editorial_topics(
+        transitions=transitions,
+        max_topics=max_topics,
+    )
+
+    return {
+        "project": {
+            "project_name": "news_aggregator",
+            "language": "en",
+        },
+        "video_requirements": video_requirements,
+        "analysis_context": {
+            "comparison_available": True,
+            "parent_run_id": parent_run_id,
+            "child_run_id": child_run_id,
+            "comparison_type": "adjacent_completed_runs",
+            "lineage_edge_count": len(lineage_edges),
+        },
+        "previous_run": parent_run,
+        "current_run": child_run,
+        "topic_transitions": transitions,
+        "editorial_topics": editorial_topics,
+        "constraints": constraints,
+    }
