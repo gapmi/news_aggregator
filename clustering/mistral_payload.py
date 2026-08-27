@@ -415,120 +415,134 @@ def _select_editorial_topics(
     return ranked[:max_topics]
 
 
-def build_mistral_video_payload(
-    conn,
-    child_run_id: int,
-    target_duration_seconds: int = DEFAULT_TARGET_DURATION_SECONDS,
-    max_topics: int = DEFAULT_MAX_TOPICS,
-    headlines_per_topic: int = DEFAULT_HEADLINES_PER_TOPIC,
-) -> dict[str, Any]:
+def _select_editorial_topics(
+    transitions: list[dict[str, Any]],
+    max_topics: int,
+) -> list[dict[str, Any]]:
     """
-    Формирует фактологический input payload для Mistral.
+    Отбирает темы для короткого новостного видеосценария.
 
-    Функция не вызывает Mistral и не модифицирует БД.
-    Вызывать только после того, как:
-    1. run переведён в success/degraded;
-    2. cluster_names сохранены;
-    3. lineage для parent -> child сохранён;
-    4. транзакция закоммичена.
+    Бизнес-правило: крупные продолжающиеся темы с заметной динамикой
+    не должны вытесняться небольшими новыми кластерами. В output
+    попадают только темы, для которых есть достаточно материала
+    для нейтральной редакционной формулировки.
     """
-    if target_duration_seconds < 30:
-        raise ValueError("target_duration_seconds must be at least 30 seconds")
+    max_topics = min(max_topics, 8)
 
-    if max_topics < 1:
-        raise ValueError("max_topics must be at least 1")
+    def topic_size(item: dict[str, Any]) -> int:
+        return int(item.get("child_size", item.get("parent_size", 0)))
 
-    parent_run_id = get_previous_completed_run_id(conn, child_run_id)
-    child_run = _load_run(conn, child_run_id)
+    def headline_count(item: dict[str, Any]) -> int:
+        return len(item.get("headline_samples") or [])
 
-    if parent_run_id is None:
-        return {
-            "project": {
-                "project_name": "news_aggregator",
-                "language": "en",
-            },
-            "video_requirements": {
-                "target_duration_seconds": target_duration_seconds,
-                "language": "en",
-                "platform": "youtube",
-                "format": "neutral news coverage recap",
-                "voice_style": "calm professional news narrator",
-                "aspect_ratio": "16:9",
-                "visual_style": "cinematic editorial news documentary",
-            },
-            "analysis_context": {
-                "comparison_available": False,
-                "child_run_id": child_run_id,
-                "reason": "No previous completed run exists for comparison.",
-            },
-            "current_run": child_run,
-            "previous_run": None,
-            "topic_transitions": [],
-            "editorial_topics": [],
-            "constraints": {
-                "must_use_only_input_data": True,
-                "do_not_invent_facts": True,
-                "do_not_interpret_metrics_without_thresholds": True,
-            },
-        }
+    def editorial_score(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        transition_type = item["transition_type"]
+        size = topic_size(item)
+        delta = abs(int(item.get("size_delta", 0)))
 
-    parent_run = _load_run(conn, parent_run_id)
-    parent_clusters = _load_clusters_with_headlines(
-        conn=conn,
-        run_id=parent_run_id,
-        headlines_per_topic=headlines_per_topic,
-    )
-    child_clusters = _load_clusters_with_headlines(
-        conn=conn,
-        run_id=child_run_id,
-        headlines_per_topic=headlines_per_topic,
-    )
-    lineage_edges = _load_lineage_edges(
-        conn=conn,
-        parent_run_id=parent_run_id,
-        child_run_id=child_run_id,
-    )
+        transition_bonus = {
+            "new": 5,
+            "reframed": 4,
+            "disappeared": 3,
+            "continuation": 2,
+        }.get(transition_type, 0)
 
-    transitions = _build_transitions(
-        parent_clusters=parent_clusters,
-        child_clusters=child_clusters,
-        lineage_edges=lineage_edges,
-    )
-    editorial_topics = _select_editorial_topics(
-        transitions=transitions,
-        max_topics=max_topics,
-    )
+        return (
+            size + delta + transition_bonus,
+            delta,
+            size,
+            item["topic_name"],
+        )
 
-    return {
-        "project": {
-            "project_name": "news_aggregator",
-            "language": "en",
-        },
-        "video_requirements": {
-            "target_duration_seconds": target_duration_seconds,
-            "language": "en",
-            "platform": "youtube",
-            "format": "neutral news coverage recap",
-            "voice_style": "calm professional news narrator",
-            "aspect_ratio": "16:9",
-            "visual_style": "cinematic editorial news documentary",
-        },
-        "analysis_context": {
-            "comparison_available": True,
-            "parent_run_id": parent_run_id,
-            "child_run_id": child_run_id,
-            "comparison_type": "adjacent_completed_runs",
-            "lineage_edge_count": len(lineage_edges),
-        },
-        "previous_run": parent_run,
-        "current_run": child_run,
-        "topic_transitions": transitions,
-        "editorial_topics": editorial_topics,
-        "constraints": {
-            "must_use_only_input_data": True,
-            "do_not_invent_facts": True,
-            "do_not_interpret_metrics_without_thresholds": True,
-            "headlines_are_source_material_not_verified_claims": True,
-            "max_topics_sent_to_model": max_topics,
-        },
+    def is_eligible(item: dict[str, Any]) -> bool:
+        transition_type = item["transition_type"]
+        size = topic_size(item)
+
+        if headline_count(item) < 2:
+            return False
+
+        if transition_type == "disappeared":
+            return size >= 12
+
+        if transition_type == "new":
+            return size >= 10
+
+        if transition_type == "reframed":
+            return size >= 10
+
+        if transition_type == "continuation":
+            return size >= 12 or abs(int(item.get("size_delta", 0))) >= 5
+
+        return False
+
+    eligible = [item for item in transitions if is_eligible(item)]
+
+    grouped: dict[str, list[dict[str, Any]]] = {
+        "new": [],
+        "reframed": [],
+        "disappeared": [],
+        "continuation": [],
     }
+
+    for item in eligible:
+        grouped.setdefault(item["transition_type"], []).append(item)
+
+    for items in grouped.values():
+        items.sort(key=editorial_score, reverse=True)
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[tuple[str, int | None, int | None]] = set()
+
+    def add_items(items: list[dict[str, Any]], limit: int) -> None:
+        for item in items:
+            if len(selected) >= max_topics:
+                return
+
+            item_key = (
+                item["topic_name"],
+                item.get("parent_cluster_id"),
+                item.get("child_cluster_id"),
+            )
+
+            if item_key in selected_ids:
+                continue
+
+            selected.append(item)
+            selected_ids.add(item_key)
+
+            if sum(
+                1
+                for selected_item in selected
+                if selected_item["transition_type"] == item["transition_type"]
+            ) >= limit:
+                return
+
+    # Новизна важна, но ограничена: она не должна заполнить весь ролик.
+    add_items(grouped["new"], limit=2)
+    add_items(grouped["reframed"], limit=2)
+    add_items(grouped["disappeared"], limit=2)
+
+    # Основа ролика — крупнейшие и наиболее изменившиеся продолжения.
+    add_items(grouped["continuation"], limit=5)
+
+    # Если тематических категорий оказалось мало, добираем лучшие темы
+    # из общего списка, сохраняя max_topics.
+    remaining = sorted(eligible, key=editorial_score, reverse=True)
+
+    for item in remaining:
+        if len(selected) >= max_topics:
+            break
+
+        item_key = (
+            item["topic_name"],
+            item.get("parent_cluster_id"),
+            item.get("child_cluster_id"),
+        )
+
+        if item_key in selected_ids:
+            continue
+
+        selected.append(item)
+        selected_ids.add(item_key)
+
+    return selected
