@@ -153,6 +153,36 @@ OUTPUT_CONTRACT:
 Return exactly one JSON object matching OUTPUT_CONTRACT.
 """.strip()
 
+def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Уменьшает payload до фактов, которые нужны именно для news agenda recap.
+
+    Полный topic_transitions остаётся в backend для аналитики,
+    но не передаётся в LLM-запрос.
+    """
+    previous_run = input_payload["previous_run"]
+    current_run = input_payload["current_run"]
+
+    return {
+        "project": input_payload["project"],
+        "video_requirements": input_payload["video_requirements"],
+        "analysis_context": input_payload["analysis_context"],
+        "previous_run": {
+            "run_id": previous_run["run_id"],
+            "article_count": previous_run["article_count"],
+            "cluster_count": previous_run["cluster_count"],
+            "noise_ratio": previous_run["noise_ratio"],
+        },
+        "current_run": {
+            "run_id": current_run["run_id"],
+            "article_count": current_run["article_count"],
+            "cluster_count": current_run["cluster_count"],
+            "noise_ratio": current_run["noise_ratio"],
+        },
+        "agenda_summary": input_payload["agenda_summary"],
+        "editorial_topics": input_payload["editorial_topics"],
+        "constraints": input_payload["constraints"],
+    }
 
 def build_mistral_user_prompt(input_payload: dict[str, Any]) -> str:
     requirements = input_payload["video_requirements"]
@@ -180,7 +210,7 @@ def build_mistral_user_prompt(input_payload: dict[str, Any]) -> str:
         "Use agenda_summary only for high-level context. "
         "Do not write about disappeared topics as main stories.\n\n"
         "INPUT_JSON:\n"
-        f"{json.dumps(input_payload, ensure_ascii=False, separators=(',', ':'))}"
+        f"{json.dumps(_build_llm_input(input_payload), ensure_ascii=False, separators=(',', ':'))}"
     )
 
 
