@@ -2,18 +2,36 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from clustering.mistral_validation import (
-    MistralVideoValidationError,
     MistralVideoScript,
+    MistralVideoValidationError,
     parse_and_validate_mistral_video_script,
 )
 
 DEFAULT_REPAIR_MAX_TOKENS = 4_096
 DEFAULT_REPAIR_TEMPERATURE = 0.1
+
 MINIMUM_WORDS_PER_SECOND = 2.1
+MAXIMUM_WORDS_PER_SECOND = 2.8
+TARGET_WORDS_PER_SECOND = 2.35
+
+REQUIRED_VISUAL_PROMPT_SUFFIX = (
+    " No text, no logos, no watermark, no labels, no captions, no subtitles."
+)
+
+FORBIDDEN_INTERNAL_NARRATION_TERMS = (
+    "cluster",
+    "clusters",
+    "topic_reference",
+    "topic_references",
+    "editorial_topic",
+    "editorial_topics",
+    "lineage",
+)
 
 
 class MistralRepairError(RuntimeError):
@@ -30,13 +48,6 @@ def _json_for_prompt(value: Any) -> str:
 
 
 def _ensure_json_object(raw_content: str, *, field_name: str) -> None:
-    """
-    Ensure that raw_content contains one valid JSON object.
-
-    Repair embeds a previous model response into the next prompt. Reject non-JSON
-    strings so HTML errors, Markdown, and unrelated text cannot become repair
-    instructions.
-    """
     if not isinstance(raw_content, str) or not raw_content.strip():
         raise MistralRepairError(
             f"{field_name} must be a non-empty JSON object string."
@@ -58,16 +69,16 @@ def _ensure_json_object(raw_content: str, *, field_name: str) -> None:
 
 def _get_output_json_schema() -> dict[str, Any]:
     """
-    Return the same JSON Schema enforced by Pydantic validation.
+    Obtain the Pydantic schema used by the production validator.
 
-    Supports both Pydantic v2 and v1. The project uses this only to make the
-    contract explicit in the repair prompt; authoritative enforcement remains
-    parse_and_validate_mistral_video_script().
+    Supports Pydantic v2 first and Pydantic v1 as fallback. The schema is
+    prompt context only; parse_and_validate_mistral_video_script remains the
+    authoritative runtime check.
     """
-    model_json_schema = getattr(MistralVideoScript, "model_json_schema", None)
+    schema_method = getattr(MistralVideoScript, "model_json_schema", None)
 
-    if callable(model_json_schema):
-        schema = model_json_schema()
+    if callable(schema_method):
+        schema = schema_method()
 
         if isinstance(schema, dict):
             return schema
@@ -85,51 +96,138 @@ def _get_output_json_schema() -> dict[str, Any]:
     )
 
 
+def _get_scene_narration_requirements(
+    invalid_raw_content: str,
+) -> list[dict[str, int | None]]:
+    """
+    Read scene_number and duration_seconds from the prior script and calculate
+    per-scene validator-style word bounds.
+
+    The repair prompt uses this to prevent a valid total word count from being
+    distributed incorrectly across short and long scenes.
+    """
+    previous_script = json.loads(invalid_raw_content)
+    scenes = previous_script.get("scenes")
+
+    if not isinstance(scenes, list):
+        return []
+
+    requirements: list[dict[str, int | None]] = []
+
+    for index, scene in enumerate(scenes, start=1):
+        if not isinstance(scene, dict):
+            continue
+
+        scene_number = scene.get("scene_number", index)
+        duration_seconds = scene.get("duration_seconds")
+
+        if (
+            not isinstance(scene_number, int)
+            or isinstance(scene_number, bool)
+            or not isinstance(duration_seconds, int)
+            or isinstance(duration_seconds, bool)
+            or duration_seconds <= 0
+        ):
+            requirements.append(
+                {
+                    "scene_number": (
+                        scene_number
+                        if isinstance(scene_number, int)
+                        else index
+                    ),
+                    "duration_seconds": (
+                        duration_seconds
+                        if isinstance(duration_seconds, int)
+                        else None
+                    ),
+                    "minimum_words": None,
+                    "target_words": None,
+                    "maximum_words": None,
+                }
+            )
+            continue
+
+        minimum_words = math.ceil(
+            duration_seconds * MINIMUM_WORDS_PER_SECOND
+        )
+        target_words = math.ceil(
+            duration_seconds * TARGET_WORDS_PER_SECOND
+        )
+        maximum_words = math.floor(
+            duration_seconds * MAXIMUM_WORDS_PER_SECOND
+        )
+
+        requirements.append(
+            {
+                "scene_number": scene_number,
+                "duration_seconds": duration_seconds,
+                "minimum_words": minimum_words,
+                "target_words": target_words,
+                "maximum_words": maximum_words,
+            }
+        )
+
+    return requirements
+
+
 def _get_narration_length_requirements(
     input_payload: Mapping[str, Any],
-) -> dict[str, int | None]:
+    invalid_raw_content: str,
+) -> dict[str, Any]:
     """
-    Derive the narration target from video_requirements.target_duration_seconds.
+    Calculate total and scene-level narration limits visible to the model.
 
-    The validator requires approximately 2.1 spoken words per second. Passing
-    the computed value in the repair prompt prevents vague instructions such as
-    "make narration long enough".
+    The total target deliberately sits above the validator minimum. A model
+    asked to generate exactly the minimum often under-runs after tokenization
+    or phrasing differences.
     """
     video_requirements = input_payload.get("video_requirements")
 
-    if not isinstance(video_requirements, Mapping):
-        return {
-            "target_duration_seconds": None,
-            "minimum_full_voiceover_words": None,
-        }
+    target_duration_seconds: int | None = None
 
-    target_duration_seconds = video_requirements.get(
-        "target_duration_seconds"
+    if isinstance(video_requirements, Mapping):
+        candidate = video_requirements.get("target_duration_seconds")
+
+        if (
+            isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and candidate > 0
+        ):
+            target_duration_seconds = candidate
+
+    scene_requirements = _get_scene_narration_requirements(
+        invalid_raw_content
     )
 
-    if (
-        not isinstance(target_duration_seconds, int)
-        or isinstance(target_duration_seconds, bool)
-        or target_duration_seconds <= 0
-    ):
-        return {
-            "target_duration_seconds": None,
-            "minimum_full_voiceover_words": None,
-        }
+    minimum_full_voiceover_words: int | None = None
+    target_full_voiceover_words: int | None = None
+    maximum_full_voiceover_words: int | None = None
+
+    if target_duration_seconds is not None:
+        minimum_full_voiceover_words = math.ceil(
+            target_duration_seconds * MINIMUM_WORDS_PER_SECOND
+        )
+        target_full_voiceover_words = math.ceil(
+            target_duration_seconds * TARGET_WORDS_PER_SECOND
+        )
+        maximum_full_voiceover_words = math.floor(
+            target_duration_seconds * MAXIMUM_WORDS_PER_SECOND
+        )
 
     return {
         "target_duration_seconds": target_duration_seconds,
-        "minimum_full_voiceover_words": math.ceil(
-            target_duration_seconds * MINIMUM_WORDS_PER_SECOND
-        ),
+        "minimum_full_voiceover_words": minimum_full_voiceover_words,
+        "target_full_voiceover_words": target_full_voiceover_words,
+        "maximum_full_voiceover_words": maximum_full_voiceover_words,
+        "scene_requirements": scene_requirements,
     }
 
 
 def extract_mistral_response_content(response: Any) -> str:
     """
-    Extract assistant content from the project's client result or raw API JSON.
+    Extract content from the project client result or raw API JSON.
 
-    Primary project-client result:
+    Primary project-client form:
         MistralCompletionResult.content
 
     Raw API JSON fallback:
@@ -182,15 +280,15 @@ def extract_mistral_response_content(response: Any) -> str:
             if chunk.get("type") != "text":
                 continue
 
-            chunk_text = chunk.get("text")
+            text = chunk.get("text")
 
-            if isinstance(chunk_text, str):
-                text_parts.append(chunk_text)
+            if isinstance(text, str):
+                text_parts.append(text)
 
-        extracted_content = "".join(text_parts).strip()
+        joined = "".join(text_parts).strip()
 
-        if extracted_content:
-            return extracted_content
+        if joined:
+            return joined
 
     raise MistralRepairError(
         "Mistral response has neither a valid .content value nor a valid "
@@ -209,11 +307,10 @@ def build_mistral_repair_request(
     temperature: float = DEFAULT_REPAIR_TEMPERATURE,
 ) -> dict[str, Any]:
     """
-    Build one Mistral JSON-mode repair request.
+    Build one Mistral JSON-mode repair request without calling the API.
 
-    The request includes the full JSON Schema used by the validator. The schema
-    makes fields such as scenes[].visual_type visibly required, rather than
-    relying on the model to infer every field from an earlier response.
+    The request carries the source payload, validation errors, Pydantic schema,
+    explicit narration budgets, and the exact required visual prompt suffix.
     """
     if not isinstance(input_payload, Mapping):
         raise MistralRepairError("input_payload must be an object.")
@@ -276,10 +373,11 @@ def build_mistral_repair_request(
     output_json_schema = _get_output_json_schema()
 
     narration_length_requirements = _get_narration_length_requirements(
-        input_payload
+        input_payload=input_payload,
+        invalid_raw_content=invalid_raw_content,
     )
 
-    system_prompt = """
+    system_prompt = f"""
 You repair JSON video scripts for a production pipeline.
 
 Return exactly one complete JSON object and nothing else:
@@ -290,60 +388,60 @@ Return exactly one complete JSON object and nothing else:
 - no patch, diff, or partial JSON.
 
 OUTPUT_JSON_SCHEMA is mandatory. Return every required field in the schema.
-Do not omit fields even if the previous invalid script omitted them.
-In particular, every scene must include all required properties, including
-scene_number, duration_seconds, narration, visual_prompt, visual_type, and
-topic_references. Do not invent field names. Do not remove required fields.
+Do not omit fields even if the previous script omitted them.
+Every scene must include all required properties, including scene_number,
+duration_seconds, narration, visual_prompt, visual_type, and topic_references.
 
-The authoritative facts are only those in INPUT_PAYLOAD.
+The only authoritative facts are in INPUT_PAYLOAD.
 Do not add, infer, fabricate, strengthen, or alter facts, dates, numbers,
 locations, entities, quotations, claims, conclusions, or causal statements
 beyond INPUT_PAYLOAD.
 
-The previous script failed deterministic validation.
-Repair every listed validation error while preserving the JSON contract,
-the required scene count, scene numbering and order, valid topic references,
-input language, and target duration.
+Repair every listed validation error.
 
 Narration requirements:
-- Meet or exceed minimum_full_voiceover_words from
-  NARRATION_LENGTH_REQUIREMENTS.
-- Make every scenes[].narration long enough for that scene's stated duration.
-- Write natural factual spoken voiceover, not instructions, notes, or outlines.
+- Follow NARRATION_LENGTH_REQUIREMENTS exactly.
+- Each scene narration must be between its listed minimum_words and
+  maximum_words inclusive. Aim near target_words.
+- The complete full_voiceover must be between minimum_full_voiceover_words and
+  maximum_full_voiceover_words inclusive. Aim near target_full_voiceover_words,
+  not near the minimum.
+- Do not use internal system terms in spoken narration: {", ".join(FORBIDDEN_INTERNAL_NARRATION_TERMS)}.
+- Write natural factual spoken voiceover, not notes, instructions, or outlines.
 - Use only facts explicitly supported by INPUT_PAYLOAD.
-- Maintain one coherent sequence across all scenes.
-- narration_script.full_voiceover must EXACTLY equal all
-  scenes[].narration strings in ascending scene-number order, with exactly one
-  ASCII space between adjacent narration strings.
-- Do not summarize, shorten, reorder, paraphrase, or independently rewrite
-  narration_script.full_voiceover.
+- Before producing JSON, write all scene narrations mentally in numeric order.
+  Then set narration_script.full_voiceover to an exact character-for-character
+  concatenation of those final narration strings, in ascending scene_number
+  order, joined by exactly one ASCII space.
+- Do not summarize, shorten, reorder, or independently rewrite full_voiceover.
 
 Topic-reference requirements:
-- Every scene, including opening and closing scenes, must have at least one
-  topic_references item.
+- Every scene, including opening and closing scenes, must contain from one to
+  three topic_references.
 - Never return topic_references: [].
-- Every topic_references item must exactly match an allowed reference in
+- Every topic_references item must exactly match an allowed reference from
   INPUT_PAYLOAD.
-- For a general opening or closing scene, reuse an allowed editorial topic
-  reference rather than leaving topic_references empty.
+- For a general opening or closing scene, reuse one or more allowed editorial
+  topic references.
 
 Visual prompt requirements:
 - Describe cinematic, non-textual footage only.
 - Write camera-visible subjects, settings, lighting, motion, and composition.
-- Never describe information diagrams or data representations.
-- Never request readable text, labels, captions, subtitles, headlines, logos,
-  watermarks, charts, graphs, tables, infographics, documents, social-media
-  posts, user interfaces, dashboards, data visualization, trend lines, nodes,
-  connecting lines, diagrams, screen displays, signage, or tickers.
+- Never request text, readable words, labels, captions, subtitles, headlines,
+  logos, watermarks, charts, graphs, tables, infographics, documents,
+  social-media posts, user interfaces, dashboards, data visualization, trend
+  lines, nodes, connecting lines, diagrams, screen displays, signage, or
+  tickers.
 - Never request screens, monitors, televisions, phones, devices, posters,
-  newspapers, documents, boards, maps, or displays that show information.
-- Do not include safety suffixes such as "no text", "no logo", "no logos",
-  "no watermark", or "no watermarks"; downstream rendering handles them.
-- Prefer real-world places, people, objects, weather, water, transit,
+  newspapers, documents, boards, maps, or displays showing information.
+- Use real-world places, people, objects, weather, water, transit,
   architecture, empty editorial workspaces without monitors, abstract light,
-  and unlabeled geographic terrain.
+  or unlabeled geographic terrain.
+- Every visual_prompt must end with this exact suffix, including capitalization
+  and punctuation:
+{REQUIRED_VISUAL_PROMPT_SUFFIX}
 
-Repair every listed validation error in one pass.
+Return the complete repaired JSON object only.
 """.strip()
 
     user_prompt_parts = [
@@ -357,6 +455,8 @@ Repair every listed validation error in one pass.
         _json_for_prompt(validation_errors),
         "NARRATION_LENGTH_REQUIREMENTS:",
         _json_for_prompt(narration_length_requirements),
+        "REQUIRED_VISUAL_PROMPT_SUFFIX:",
+        REQUIRED_VISUAL_PROMPT_SUFFIX,
     ]
 
     if normalized_excluded_references:
@@ -402,10 +502,10 @@ def validate_mistral_repair_response(
     input_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     """
-    Extract repaired content and validate it with the authoritative validator.
+    Extract repair content and run the authoritative validator.
 
-    MistralVideoValidationError means the repair is still invalid. The caller
-    should stop instead of sending a second automatic repair request.
+    A MistralVideoValidationError means the repair remains invalid. The caller
+    must stop instead of scheduling another automatic repair attempt.
     """
     if not isinstance(input_payload, Mapping):
         raise MistralRepairError("input_payload must be an object.")
@@ -430,13 +530,11 @@ def repair_mistral_video_script(
     temperature: float = DEFAULT_REPAIR_TEMPERATURE,
 ) -> dict[str, Any]:
     """
-    Execute exactly one repair call and validate the resulting script.
+    Perform one repair request and validate the returned script.
 
-    For production audit logging, prefer calling build_mistral_repair_request(),
-    call_mistral(), and validate_mistral_repair_response() separately, allowing
-    storage of both request bodies, raw responses, and validation errors.
-
-    This helper deliberately does not issue a second repair call.
+    This helper intentionally performs no second repair attempt. Production
+    orchestration should save the generated request, raw result, and validation
+    errors as audit artifacts before proceeding to TTS or visual generation.
     """
     if not callable(call_mistral):
         raise MistralRepairError("call_mistral must be callable.")
