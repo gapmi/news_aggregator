@@ -213,6 +213,24 @@ def _detect_cluster_language(titles: list[str]) -> str | None:
         return None
     return language
 
+def _looks_like_named_entity(phrase: str) -> bool:
+    words = [w for w in re.findall(r"[A-Za-zÀ-ÿЁёА-Яа-я]+", phrase) if w]
+    if not words:
+        return False
+    significant = [w for w in words if len(w) >= 3]
+    if not significant:
+        return False
+    titled = [w for w in significant if w[:1].isupper()]
+    return len(titled) >= 1 and len(titled) >= max(1, len(significant) // 2)
+
+
+def _has_weak_inner_words(phrase: str) -> bool:
+    words = _tokenize_phrase(phrase.lower())
+    if len(words) < 3:
+        return False
+    stop = _all_stopwords()
+    inner = words[1:-1]
+    return any(w in stop for w in inner)
 
 def _normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
@@ -483,6 +501,12 @@ def _score_candidates(
         if low in GENERIC_NEWS_WORDS:
             score -= 3.0
 
+        if _looks_like_named_entity(cleaned):
+            score += 2.5
+
+        if _has_weak_inner_words(cleaned):
+            score -= 2.0
+
         ranked.append((score, cleaned))
 
     ranked.sort(key=lambda x: (-x[0], x[1].lower()))
@@ -506,19 +530,22 @@ def _build_display_names(
         if _strong_word_count(c, language_code) >= 2 and not _has_mixed_scripts(c)
     ]
 
-    short_pool = strong_candidates if strong_candidates else tags
+    topical = [c for c in strong_candidates if not _looks_like_named_entity(c)]
+    entities = [c for c in strong_candidates if _looks_like_named_entity(c)]
 
-    if len(short_pool) >= 2:
-        name_short = " · ".join(short_pool[:2])
+    if topical and entities:
+        short_pool = [topical[0], entities[0]]
+    elif strong_candidates:
+        short_pool = strong_candidates[:2]
     else:
-        name_short = short_pool[0]
+        short_pool = tags[:2]
 
     if len(tags) >= 3:
         name_title = " · ".join(tags[:3])
     else:
-        name_title = name_short
+        name_title = short_pool
 
-    return name_short[:80], name_title[:160], tags, concepts
+    return short_pool[:80], name_title[:160], tags, concepts
 
 def generate_cluster_name(conn, cluster_id: int) -> dict:
     with conn.cursor() as cur:
