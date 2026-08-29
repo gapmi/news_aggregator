@@ -23,6 +23,7 @@ REQUIRED_VISUAL_PROMPT_SUFFIX = (
     "16:9, no text, no logos, no watermark"
 )
 
+
 FORBIDDEN_INTERNAL_NARRATION_TERMS = (
     "cluster",
     "clusters",
