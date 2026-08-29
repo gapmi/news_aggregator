@@ -213,6 +213,7 @@ def _detect_cluster_language(titles: list[str]) -> str | None:
         return None
     return language
 
+
 def _looks_like_named_entity(phrase: str) -> bool:
     words = [w for w in re.findall(r"[A-Za-zÀ-ÿЁёА-Яа-я]+", phrase) if w]
     if not words:
@@ -231,6 +232,7 @@ def _has_weak_inner_words(phrase: str) -> bool:
     stop = _all_stopwords()
     inner = words[1:-1]
     return any(w in stop for w in inner)
+
 
 def _normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
@@ -292,6 +294,34 @@ def _is_bad_keyword(phrase: str, language_code: str | None) -> bool:
     return False
 
 
+def _has_mixed_scripts(text: str) -> bool:
+    has_latin = bool(re.search(r"[A-Za-z]", text))
+    has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", text))
+    has_arabic = bool(re.search(r"[\u0600-\u06ff]", text))
+    has_cjk = bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]", text))
+
+    groups = sum([has_latin, has_cyrillic, has_arabic, has_cjk])
+    return groups >= 2
+
+
+def _strong_word_count(phrase: str, language_code: str | None) -> int:
+    words = _tokenize_phrase(phrase.lower())
+    if not words:
+        return 0
+
+    stop = _all_stopwords()
+    strong = [
+        w for w in words
+        if len(w) >= 4 and w not in stop and w not in SOURCE_WORDS
+    ]
+    return len(strong)
+
+
+def _document_frequency(phrase: str, titles: list[str]) -> int:
+    low = phrase.lower()
+    return sum(1 for title in titles if low in title.lower())
+
+
 def _is_junk_phrase(phrase: str, language_code: str | None) -> bool:
     p = _cleanup_keyword(phrase).lower()
     if not p:
@@ -327,37 +357,16 @@ def _is_junk_phrase(phrase: str, language_code: str | None) -> bool:
     if language_code == "ar":
         if p in {"قال", "بحسب", "هذا", "هذه"}:
             return True
-    
+
     if _has_mixed_scripts(p):
         return True
 
     stop = _all_stopwords()
     if words[0] in stop or words[-1] in stop:
         return True
-    
+
     return False
 
-def _has_mixed_scripts(text: str) -> bool:
-    has_latin = bool(re.search(r"[A-Za-z]", text))
-    has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", text))
-    has_arabic = bool(re.search(r"[\u0600-\u06ff]", text))
-    has_cjk = bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]", text))
-
-    groups = sum([has_latin, has_cyrillic, has_arabic, has_cjk])
-    return groups >= 2
-
-
-def _strong_word_count(phrase: str, language_code: str | None) -> int:
-    words = _tokenize_phrase(phrase.lower())
-    if not words:
-        return 0
-
-    stop = _all_stopwords()
-    strong = [
-        w for w in words
-        if len(w) >= 4 and w not in stop and w not in SOURCE_WORDS
-    ]
-    return len(strong)
 
 def _dedupe_phrases(phrases: list[str]) -> list[str]:
     result: list[str] = []
@@ -473,7 +482,6 @@ def _score_candidates(
     token_candidates: list[str],
     language_code: str | None,
 ) -> list[str]:
-    title_lows = [title.lower() for title in titles if title]
     ranked: list[tuple[float, str]] = []
 
     candidates = _dedupe_phrases(yake_keywords + heuristic_phrases + token_candidates)
@@ -488,12 +496,17 @@ def _score_candidates(
         if _is_junk_phrase(cleaned, language_code):
             continue
 
-        article_hits = sum(1 for title in title_lows if low in title)
+        article_hits = _document_frequency(cleaned, titles)
         word_count = len(_tokenize_phrase(low))
 
         score = 0.0
         score += article_hits * 3.0
         score += min(word_count, 3) * 1.2
+
+        if article_hits >= 2:
+            score += 4.0
+        else:
+            score -= 2.5
 
         if word_count >= 2:
             score += 2.5
@@ -530,22 +543,38 @@ def _build_display_names(
         if _strong_word_count(c, language_code) >= 2 and not _has_mixed_scripts(c)
     ]
 
+    supported_candidates = [
+        c for c in strong_candidates
+        if c in tags[:3]
+    ]
+    if supported_candidates:
+        strong_candidates = supported_candidates
+
     topical = [c for c in strong_candidates if not _looks_like_named_entity(c)]
     entities = [c for c in strong_candidates if _looks_like_named_entity(c)]
 
     if topical and entities:
-        short_pool = [topical[0], entities[0]]
-    elif strong_candidates:
-        short_pool = strong_candidates[:2]
+        short_parts = [topical[0], entities[0]]
+    elif len(strong_candidates) >= 2:
+        short_parts = strong_candidates[:2]
+    elif len(strong_candidates) == 1:
+        short_parts = [strong_candidates[0]]
+    elif len(tags) >= 2:
+        short_parts = tags[:2]
+    elif len(tags) == 1:
+        short_parts = [tags[0]]
     else:
-        short_pool = tags[:2]
+        short_parts = [f"Cluster {cluster_id}"]
+
+    name_short = " · ".join(short_parts)
 
     if len(tags) >= 3:
         name_title = " · ".join(tags[:3])
     else:
-        name_title = short_pool
+        name_title = name_short
 
-    return short_pool[:80], name_title[:160], tags, concepts
+    return name_short[:80], name_title[:160], tags, concepts
+
 
 def generate_cluster_name(conn, cluster_id: int) -> dict:
     with conn.cursor() as cur:
