@@ -29,6 +29,55 @@ MULTI_STOPWORDS = {
         "ещё", "сегодня", "завтра", "вчера", "стало", "известно", "сообщили",
         "почему", "который", "которая", "которые",
     },
+    "de": {
+        "der", "die", "das", "ein", "eine", "einer", "einem", "einen", "und", "oder",
+        "mit", "ohne", "von", "zu", "zum", "zur", "im", "in", "am", "an", "auf",
+        "über", "unter", "nach", "vor", "für", "gegen", "wie", "was", "wer", "wo",
+        "warum", "dass", "sagte", "sagt", "bericht", "berichte",
+    },
+    "fr": {
+        "le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "avec", "sans",
+        "dans", "sur", "sous", "pour", "contre", "après", "avant", "que", "qui",
+        "quoi", "où", "pourquoi", "comment", "dit", "selon", "rapport", "rapports",
+    },
+    "es": {
+        "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "y", "o",
+        "con", "sin", "en", "sobre", "para", "contra", "después", "antes", "que",
+        "quien", "qué", "dónde", "por", "cómo", "dijo", "según", "reporte", "reportes",
+    },
+    "ja": {
+        "の", "に", "は", "を", "た", "が", "で", "て", "と", "し", "れ", "さ", "ある",
+        "いる", "する", "した", "として", "について", "による", "など", "という",
+    },
+    "ko": {
+        "의", "에", "이", "가", "을", "를", "은", "는", "와", "과", "도", "로", "으로",
+        "에서", "에게", "하다", "했다", "대한", "관련", "라고", "이라고",
+    },
+    "zh": {
+        "的", "了", "在", "是", "和", "与", "对", "就", "都", "而", "及", "或", "被",
+        "将", "把", "由", "关于", "有关", "一个", "一种", "表示", "称",
+    },
+    "sv": {
+        "och", "det", "att", "som", "för", "med", "utan", "från", "till", "på", "i",
+        "av", "om", "mot", "efter", "före", "vad", "vem", "var", "hur", "sade",
+    },
+    "no": {
+        "og", "det", "at", "som", "for", "med", "uten", "fra", "til", "på", "i",
+        "av", "om", "mot", "etter", "før", "hva", "hvem", "hvor", "hvordan", "sa",
+    },
+    "da": {
+        "og", "det", "at", "som", "for", "med", "uden", "fra", "til", "på", "i",
+        "af", "om", "mod", "efter", "før", "hvad", "hvem", "hvor", "hvordan", "sagde",
+    },
+    "ar": {
+        "في", "من", "على", "إلى", "عن", "مع", "دون", "بعد", "قبل", "هذا", "هذه",
+        "ذلك", "الذي", "التي", "ما", "ماذا", "من", "أين", "كيف", "قال", "بحسب",
+    },
+    "pl": {
+        "i", "oraz", "z", "ze", "w", "we", "na", "do", "od", "po", "przed", "pod",
+        "nad", "o", "u", "bez", "dla", "jak", "co", "kto", "gdzie", "dlaczego",
+        "który", "która", "które", "powiedział", "według", "raport",
+    },
 }
 
 GENERIC_NEWS_WORDS = {
@@ -44,9 +93,70 @@ SOURCE_WORDS = {
     "news", "reuters", "associated", "press",
 }
 
+LEADING_FUNCTION_WORDS = {
+    "en": {"the", "a", "an", "of", "in", "on", "at", "to", "for", "by", "with", "from"},
+    "pt": {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "na", "no", "nas", "nos", "à", "ao", "e", "que", "por", "para", "com", "sem"},
+    "ru": {"и", "в", "во", "на", "по", "о", "об", "от", "до", "из", "у", "к", "ко", "с", "со", "за", "под", "над", "при", "что", "как"},
+    "de": {"der", "die", "das", "ein", "eine", "und", "oder", "von", "zu", "im", "in", "am", "an", "auf", "für", "mit"},
+    "fr": {"le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "dans", "sur", "pour", "avec"},
+    "es": {"el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "y", "o", "en", "para", "con", "sin"},
+    "sv": {"och", "det", "att", "som", "för", "med", "från", "till", "på", "i", "av", "om"},
+    "no": {"og", "det", "at", "som", "for", "med", "fra", "til", "på", "i", "av", "om"},
+    "da": {"og", "det", "at", "som", "for", "med", "fra", "til", "på", "i", "af", "om"},
+    "ar": {"في", "من", "على", "إلى", "عن", "مع", "بعد", "قبل", "هذا", "هذه", "الذي", "التي"},
+    "pl": {"i", "oraz", "z", "ze", "w", "we", "na", "do", "od", "po", "o", "u", "dla", "jak", "co"},
+}
+
+TRAILING_FUNCTION_WORDS = {
+    "en": {"the", "a", "an", "of", "in", "on", "at", "to", "for", "by", "with", "from"},
+    "pt": {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "em", "na", "no", "nas", "nos", "à", "ao", "e", "que", "por", "para", "com", "sem"},
+    "ru": {"и", "в", "во", "на", "по", "о", "об", "от", "до", "из", "у", "к", "ко", "с", "со", "за", "под", "над", "при", "что", "как"},
+    "de": {"der", "die", "das", "ein", "eine", "und", "oder", "von", "zu", "im", "in", "am", "an", "auf", "für", "mit"},
+    "fr": {"le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "dans", "sur", "pour", "avec"},
+    "es": {"el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "y", "o", "en", "para", "con", "sin"},
+    "sv": {"och", "det", "att", "som", "för", "med", "från", "till", "på", "i", "av", "om"},
+    "no": {"og", "det", "at", "som", "for", "med", "fra", "til", "på", "i", "av", "om"},
+    "da": {"og", "det", "at", "som", "for", "med", "fra", "til", "på", "i", "af", "om"},
+    "ar": {"في", "من", "على", "إلى", "عن", "مع", "بعد", "قبل", "هذا", "هذه", "الذي", "التي"},
+    "pl": {"i", "oraz", "z", "ze", "w", "we", "na", "do", "od", "po", "o", "u", "dla", "jak", "co"},
+}
+
+BANNED_PHRASE_PATTERNS = [
+    r"^\w{1,2}\s+\w{1,3}$",
+    r"^(o|a|os|as|um|uma|que)\s+",
+    r"^(the|a|an|of|in|on|to)\s+",
+    r"^(и|в|на|по|что|как)\s+",
+    r"^(der|die|das|ein|eine|und|mit|von|zu)\s+",
+    r"^(le|la|les|un|une|des|de|du|et|avec)\s+",
+    r"^(el|la|los|las|un|una|de|del|y|con)\s+",
+    r"^(i|oraz|z|ze|w|we|na|do|od)\s+",
+    r"\s+(de|da|do|dos|das|na|no|nas|nos|à|ao)$",
+    r"\s+(of|in|on|to|for|by|with|from)$",
+    r"\s+(в|на|по|о|об|с|со|из|от)$",
+    r"\s+(der|die|das|mit|von|zu|im|am|an|auf)$",
+    r"\s+(de|du|des|dans|sur|avec|pour)$",
+    r"\s+(de|del|en|para|con|sin)$",
+    r"\s+(i|oraz|z|ze|w|we|na|do|od|po)$",
+    r"^(disse|says|said|сообщили|заявили|sagte|dit|dijo|powiedział|قال)\b",
+    r"\b(disse o candidato|que disse o|o que|à presidência|said the candidate|что сказал|lo que|ce que)\b",
+]
+
+CJK_BANNED_EXACT = {
+    "について", "として", "による", "という", "有关", "关于", "表示", "称", "관련", "대한",
+}
+
 
 def _detect_title_language(text: str) -> str:
     low = text.lower()
+
+    if re.search(r"[\u3040-\u30ff]", text):
+        return "ja"
+    if re.search(r"[\uac00-\ud7af]", text):
+        return "ko"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    if re.search(r"[\u0600-\u06ff]", text):
+        return "ar"
 
     cyr = sum(1 for ch in low if "а" <= ch <= "я" or ch == "ё")
     if cyr >= 3:
@@ -58,6 +168,34 @@ def _detect_title_language(text: str) -> str:
     ]
     if any(marker in f" {low} " for marker in pt_markers):
         return "pt"
+
+    de_markers = [" der ", " die ", " das ", " und ", " mit ", " von ", " sagt "]
+    if any(marker in f" {low} " for marker in de_markers):
+        return "de"
+
+    fr_markers = [" le ", " la ", " les ", " des ", " avec ", " pour ", " dit "]
+    if any(marker in f" {low} " for marker in fr_markers):
+        return "fr"
+
+    es_markers = [" el ", " la ", " los ", " las ", " para ", " con ", " dijo "]
+    if any(marker in f" {low} " for marker in es_markers):
+        return "es"
+
+    sv_markers = [" och ", " för ", " med ", " från ", " sade "]
+    if any(marker in f" {low} " for marker in sv_markers):
+        return "sv"
+
+    no_markers = [" og ", " for ", " med ", " fra ", " sa "]
+    if any(marker in f" {low} " for marker in no_markers):
+        return "no"
+
+    da_markers = [" og ", " for ", " med ", " fra ", " sagde "]
+    if any(marker in f" {low} " for marker in da_markers):
+        return "da"
+
+    pl_markers = [" oraz ", " powiedział ", " według ", " który ", " która "]
+    if any(marker in f" {low} " for marker in pl_markers):
+        return "pl"
 
     return "en"
 
@@ -93,6 +231,14 @@ def _all_stopwords() -> set[str]:
     return stop
 
 
+def _tokenize_phrase(text: str) -> list[str]:
+    if re.search(r"[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff\u0600-\u06ff]", text):
+        if " " in text:
+            return [t for t in text.split() if t]
+        return [text]
+    return re.findall(r"[\wÀ-ÿЁёА-Яа-я-]+", text.lower())
+
+
 def _is_bad_keyword(phrase: str, language_code: str | None) -> bool:
     if not phrase:
         return True
@@ -107,7 +253,7 @@ def _is_bad_keyword(phrase: str, language_code: str | None) -> bool:
     if p.isdigit():
         return True
 
-    words = re.findall(r"[\wÀ-ÿЁёА-Яа-я-]+", p)
+    words = _tokenize_phrase(p)
     if not words:
         return True
 
@@ -121,6 +267,48 @@ def _is_bad_keyword(phrase: str, language_code: str | None) -> bool:
 
     if len(words) == 1 and words[0] in GENERIC_NEWS_WORDS:
         return True
+
+    if p in CJK_BANNED_EXACT:
+        return True
+
+    return False
+
+
+def _is_junk_phrase(phrase: str, language_code: str | None) -> bool:
+    p = _cleanup_keyword(phrase).lower()
+    if not p:
+        return True
+
+    words = _tokenize_phrase(p)
+    if not words:
+        return True
+
+    lang = language_code if language_code in {
+        "en", "pt", "ru", "de", "fr", "es", "sv", "no", "da", "ar", "pl"
+    } else None
+
+    if len(words) == 2 and all(len(w) <= 3 for w in words):
+        return True
+
+    if lang:
+        if len(words) >= 1 and words[0] in LEADING_FUNCTION_WORDS.get(lang, set()):
+            return True
+        if len(words) >= 1 and words[-1] in TRAILING_FUNCTION_WORDS.get(lang, set()):
+            return True
+
+    for pattern in BANNED_PHRASE_PATTERNS:
+        if re.search(pattern, p, flags=re.IGNORECASE):
+            return True
+
+    if language_code in {"ja", "ko", "zh"}:
+        if p in CJK_BANNED_EXACT:
+            return True
+        if len(p) <= 2:
+            return True
+
+    if language_code == "ar":
+        if p in {"قال", "بحسب", "هذا", "هذه"}:
+            return True
 
     return False
 
@@ -163,6 +351,11 @@ def _extract_title_phrases(titles: list[str]) -> list[str]:
             if not chunk:
                 continue
 
+            if re.search(r"[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff\u0600-\u06ff]", chunk):
+                if len(chunk) >= 4:
+                    phrase_counts[chunk] += 1
+                continue
+
             words = re.findall(r"[\wÀ-ÿЁёА-Яа-я]+", chunk)
             if not words:
                 continue
@@ -186,6 +379,11 @@ def _extract_frequent_tokens(titles: list[str]) -> list[str]:
         if not title:
             continue
 
+        if re.search(r"[\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff\u0600-\u06ff]", title):
+            if len(title.strip()) >= 4:
+                token_counts[title.strip()] += 1
+            continue
+
         tokens = re.findall(r"[\wÀ-ÿЁёА-Яа-я-]{3,}", title.lower())
         for token in tokens:
             if token in stop:
@@ -202,9 +400,13 @@ def _extract_yake_keywords(text: str, language_code: str | None) -> list[str]:
     if yake is None:
         return []
 
+    lang_for_yake = language_code if language_code in {
+        "en", "pt", "ru", "de", "fr", "es", "sv", "no", "da", "ar"
+    } else "en"
+
     try:
         kw_extractor = yake.KeywordExtractor(
-            lan=language_code if language_code in {"en", "pt", "ru"} else "en",
+            lan=lang_for_yake,
             n=3,
             dedupLim=0.35,
             dedupFunc="seqm",
@@ -237,8 +439,11 @@ def _score_candidates(
         if _is_bad_keyword(cleaned, language_code):
             continue
 
+        if _is_junk_phrase(cleaned, language_code):
+            continue
+
         article_hits = sum(1 for title in title_lows if low in title)
-        word_count = len(low.split())
+        word_count = len(_tokenize_phrase(low))
 
         score = 0.0
         score += article_hits * 3.0
