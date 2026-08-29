@@ -20,7 +20,7 @@ MAXIMUM_WORDS_PER_SECOND = 2.8
 TARGET_WORDS_PER_SECOND = 2.35
 
 REQUIRED_VISUAL_PROMPT_SUFFIX = (
-    " No text, no logos, no watermark, no labels, no captions, no subtitles."
+    "16:9, no text, no logos, no watermark"
 )
 
 FORBIDDEN_INTERNAL_NARRATION_TERMS = (
