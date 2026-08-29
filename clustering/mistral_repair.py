@@ -21,6 +21,9 @@ TARGET_WORDS_PER_SECOND = 2.35
 
 REQUIRED_VISUAL_PROMPT_SUFFIX = (
     "16:9, no text, no logos, no watermark"
+    "16:9, no text, no logos, no watermark"
+    "16:9, no text, no logos, no watermark"
+    "16:9, no text, no logos, no watermark"
 )
 
 
