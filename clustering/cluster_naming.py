@@ -309,9 +309,37 @@ def _is_junk_phrase(phrase: str, language_code: str | None) -> bool:
     if language_code == "ar":
         if p in {"قال", "بحسب", "هذا", "هذه"}:
             return True
+    
+    if _has_mixed_scripts(p):
+        return True
 
+    stop = _all_stopwords()
+    if words[0] in stop or words[-1] in stop:
+        return True
+    
     return False
 
+def _has_mixed_scripts(text: str) -> bool:
+    has_latin = bool(re.search(r"[A-Za-z]", text))
+    has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", text))
+    has_arabic = bool(re.search(r"[\u0600-\u06ff]", text))
+    has_cjk = bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]", text))
+
+    groups = sum([has_latin, has_cyrillic, has_arabic, has_cjk])
+    return groups >= 2
+
+
+def _strong_word_count(phrase: str, language_code: str | None) -> int:
+    words = _tokenize_phrase(phrase.lower())
+    if not words:
+        return 0
+
+    stop = _all_stopwords()
+    strong = [
+        w for w in words
+        if len(w) >= 4 and w not in stop and w not in SOURCE_WORDS
+    ]
+    return len(strong)
 
 def _dedupe_phrases(phrases: list[str]) -> list[str]:
     result: list[str] = []
@@ -464,6 +492,7 @@ def _score_candidates(
 def _build_display_names(
     candidates: list[str],
     cluster_id: int,
+    language_code: str | None = None,
 ) -> tuple[str, str, list[str], list[str]]:
     if not candidates:
         fallback = f"Cluster {cluster_id}"
@@ -472,10 +501,17 @@ def _build_display_names(
     tags = candidates[:5]
     concepts = candidates[:7]
 
-    if len(tags) >= 2:
-        name_short = " · ".join(tags[:2])
+    strong_candidates = [
+        c for c in candidates
+        if _strong_word_count(c, language_code) >= 2 and not _has_mixed_scripts(c)
+    ]
+
+    short_pool = strong_candidates if strong_candidates else tags
+
+    if len(short_pool) >= 2:
+        name_short = " · ".join(short_pool[:2])
     else:
-        name_short = tags[0]
+        name_short = short_pool[0]
 
     if len(tags) >= 3:
         name_title = " · ".join(tags[:3])
@@ -483,7 +519,6 @@ def _build_display_names(
         name_title = name_short
 
     return name_short[:80], name_title[:160], tags, concepts
-
 
 def generate_cluster_name(conn, cluster_id: int) -> dict:
     with conn.cursor() as cur:
@@ -535,7 +570,11 @@ def generate_cluster_name(conn, cluster_id: int) -> dict:
         language_code=language_code,
     )
 
-    name_short, name_title, tags, concepts = _build_display_names(candidates, cluster_id)
+    name_short, name_title, tags, concepts = _build_display_names(
+        candidates,
+        cluster_id,
+        language_code,
+    )
 
     return {
         "name_short": name_short,
