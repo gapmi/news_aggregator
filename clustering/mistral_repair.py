@@ -28,11 +28,11 @@ def _json_for_prompt(value: Any) -> str:
 
 def _ensure_json_object(raw_content: str, *, field_name: str) -> None:
     """
-    Ensure that a string contains a JSON object.
+    Ensure that raw_content contains one valid JSON object.
 
-    The repair prompt embeds the previous model result verbatim. Rejecting a
-    non-JSON response here prevents HTML errors, Markdown, or arbitrary text
-    from being inserted into the repair task as if it were a script.
+    The original invalid model output is embedded in the repair prompt.
+    Rejecting arbitrary plain text, HTML, or Markdown prevents prompt
+    corruption and makes repair input deterministic.
     """
     if not isinstance(raw_content, str) or not raw_content.strip():
         raise MistralRepairError(
@@ -53,19 +53,29 @@ def _ensure_json_object(raw_content: str, *, field_name: str) -> None:
         )
 
 
-def extract_mistral_response_content(response: Mapping[str, Any]) -> str:
+def extract_mistral_response_content(response: Any) -> str:
     """
-    Extract assistant text from a non-streaming Mistral chat-completion result.
+    Extract raw assistant content from either supported response shape.
 
-    Standard expected shape:
+    Primary project-client shape:
+        MistralCompletionResult.content
+
+    Raw Mistral HTTP JSON fallback:
         choices[0].message.content
 
-    `content` may be either a text string or a list of typed content chunks.
-    The returned value is raw model output; JSON parsing and business
-    validation are intentionally done by the caller/validator.
+    The returned content is not parsed or validated here. The caller must pass
+    it to parse_and_validate_mistral_video_script().
     """
+    result_content = getattr(response, "content", None)
+
+    if isinstance(result_content, str) and result_content.strip():
+        return result_content.strip()
+
     if not isinstance(response, Mapping):
-        raise MistralRepairError("Mistral response must be an object.")
+        raise MistralRepairError(
+            "Mistral response must be either a Mapping or an object with "
+            "a non-empty string .content attribute."
+        )
 
     choices = response.get("choices")
 
@@ -114,8 +124,8 @@ def extract_mistral_response_content(response: Mapping[str, Any]) -> str:
             return extracted_content
 
     raise MistralRepairError(
-        "Mistral response choices[0].message.content is empty "
-        "or has an unsupported format."
+        "Mistral response has neither a valid .content value nor a valid "
+        "choices[0].message.content value."
     )
 
 
@@ -130,11 +140,15 @@ def build_mistral_repair_request(
     temperature: float = DEFAULT_REPAIR_TEMPERATURE,
 ) -> dict[str, Any]:
     """
-    Build one Mistral JSON-mode request that repairs an invalid video script.
+    Build a single Mistral JSON-mode request for repairing a video script.
 
-    This function does not call Mistral. The calling code should persist the
-    resulting request body as an audit artifact, invoke call_mistral(), store
-    the raw response, then validate using validate_mistral_repair_response().
+    The request contains:
+    - authoritative INPUT_PAYLOAD;
+    - previous invalid JSON script;
+    - deterministic validator error strings;
+    - optional topic references prohibited from spoken narration.
+
+    This function does not make an HTTP call.
     """
     if not isinstance(input_payload, Mapping):
         raise MistralRepairError("input_payload must be an object.")
@@ -159,9 +173,12 @@ def build_mistral_repair_request(
     if not isinstance(model, str) or not model.strip():
         raise MistralRepairError("model must be a non-empty string.")
 
-    if not isinstance(max_tokens, int) or max_tokens < 512:
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
+        raise MistralRepairError("max_tokens must be an integer.")
+
+    if max_tokens < 512:
         raise MistralRepairError(
-            "max_tokens must be an integer greater than or equal to 512."
+            "max_tokens must be greater than or equal to 512."
         )
 
     if (
@@ -191,21 +208,6 @@ def build_mistral_repair_request(
 
             normalized_excluded_references.append(reference.strip())
 
-    excluded_topics_instruction = ""
-
-    if normalized_excluded_references:
-        excluded_topics_instruction = "\n\n".join(
-            [
-                "EXCLUDED_TOPIC_REFERENCES:",
-                _json_for_prompt(normalized_excluded_references),
-                (
-                    "Do not mention, summarize, prioritize, or create a "
-                    "dedicated spoken scene for these topic references. "
-                    "Do not replace them with unsupported facts."
-                ),
-            ]
-        )
-
     system_prompt = """
 You repair JSON video scripts for a production pipeline.
 
@@ -221,11 +223,11 @@ locations, entities, quotations, claims, conclusions, or causal statements
 beyond INPUT_PAYLOAD.
 
 The previous script failed deterministic validation.
-Repair every listed validation error while preserving the existing JSON
+Repair every listed validation error while preserving the established JSON
 contract:
-- retain the same top-level and nested field names;
+- retain all required top-level and nested field names;
 - retain the same object nesting;
-- retain the same scene count;
+- retain the required scene count;
 - retain scene numbering and required scene order;
 - preserve valid topic references;
 - preserve the input language;
@@ -234,28 +236,28 @@ contract:
 Narration requirements:
 - Make every scenes[].narration long enough for that scene's duration.
 - Write natural factual spoken voiceover, not instructions, notes, or outlines.
-- Use only facts supported by INPUT_PAYLOAD.
-- Maintain a coherent sequence across all scenes.
+- Use only facts explicitly supported by INPUT_PAYLOAD.
+- Maintain one coherent sequence across all scenes.
 - narration_script.full_voiceover must EXACTLY equal all
-  scenes[].narration strings in ascending scene-number order, joined with
-  exactly one ASCII space between adjacent narration strings.
+  scenes[].narration strings in ascending scene-number order, with exactly one
+  ASCII space between adjacent narration strings.
 - Do not summarize, shorten, reorder, paraphrase, or independently rewrite
   narration_script.full_voiceover.
 
 Visual prompt requirements:
-- Describe only cinematic, non-textual visuals.
+- Describe cinematic non-textual visuals only.
 - Never request readable text, labels, captions, subtitles, headlines, logos,
   watermarks, charts, graphs, tables, infographics, documents, social-media
   posts, screens displaying information, signage, or tickers.
 - Never request a screen, display, device, poster, newspaper, document, or
-  board that contains readable information.
+  board with readable information.
 - Do not include safety suffixes such as "no text", "no logo", "no logos",
-  "no watermark", or "no watermarks"; the downstream renderer appends them.
+  "no watermark", or "no watermarks"; downstream rendering handles them.
 - Prefer people, places, objects, natural movement, abstract movement,
   unlabeled maps, atmospheric newsroom imagery, and non-textual metaphors.
 
 Fix every listed validation error in one pass.
-Return the complete repaired JSON object, never a patch or diff.
+Return the complete repaired JSON object, never a patch, diff, or partial JSON.
 """.strip()
 
     user_prompt_parts = [
@@ -267,12 +269,20 @@ Return the complete repaired JSON object, never a patch or diff.
         _json_for_prompt(validation_errors),
     ]
 
-    if excluded_topics_instruction:
-        user_prompt_parts.append(excluded_topics_instruction)
+    if normalized_excluded_references:
+        user_prompt_parts.extend(
+            [
+                "EXCLUDED_TOPIC_REFERENCES:",
+                _json_for_prompt(normalized_excluded_references),
+                (
+                    "Do not mention, summarize, prioritize, or create a "
+                    "dedicated spoken scene for excluded topic references. "
+                    "Do not replace them with unsupported facts."
+                ),
+            ]
+        )
 
     user_prompt_parts.append("Return the repaired JSON object only.")
-
-    user_prompt = "\n\n".join(user_prompt_parts)
 
     return {
         "model": model.strip(),
@@ -288,7 +298,7 @@ Return the complete repaired JSON object, never a patch or diff.
             },
             {
                 "role": "user",
-                "content": user_prompt,
+                "content": "\n\n".join(user_prompt_parts),
             },
         ],
     }
@@ -296,19 +306,19 @@ Return the complete repaired JSON object, never a patch or diff.
 
 def validate_mistral_repair_response(
     *,
-    response: Mapping[str, Any],
+    response: Any,
     input_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     """
-    Extract raw repair output and validate it with the authoritative validator.
+    Extract raw repair content and validate it against the video-script contract.
 
     Raises:
         MistralRepairError:
-            When the API response has an unexpected shape.
+            If the Mistral response cannot be interpreted.
 
         MistralVideoValidationError:
-            When Mistral returned JSON that still fails the video-script
-            contract. Do not issue a second repair request after this error.
+            If the repair completion remains invalid. The caller must stop
+            rather than submit a second repair request.
     """
     if not isinstance(input_payload, Mapping):
         raise MistralRepairError("input_payload must be an object.")
@@ -327,18 +337,21 @@ def repair_mistral_video_script(
     invalid_raw_content: str,
     validation_errors: list[str],
     model: str,
-    call_mistral: Callable[[dict[str, Any]], Mapping[str, Any]],
+    call_mistral: Callable[[dict[str, Any]], Any],
     excluded_topic_references: list[str] | None = None,
     max_tokens: int = DEFAULT_REPAIR_MAX_TOKENS,
     temperature: float = DEFAULT_REPAIR_TEMPERATURE,
 ) -> dict[str, Any]:
     """
-    Perform exactly one repair call and validate its output.
+    Perform exactly one Mistral repair call and validate the result.
 
-    This convenience function is appropriate for a simple pipeline or CLI.
-    For production audit logging, call build_mistral_repair_request(),
-    call_mistral(), and validate_mistral_repair_response() separately so both
-    raw request bodies and raw responses can be persisted.
+    `call_mistral` may return the project's MistralCompletionResult object
+    or a raw Mistral response mapping. No retries are made here beyond any
+    network retries already built into the provided call_mistral function.
+
+    For production audit logging, use build_mistral_repair_request(),
+    call_mistral(), and validate_mistral_repair_response() separately, so the
+    initial and repair raw request/response artifacts can be saved.
     """
     if not callable(call_mistral):
         raise MistralRepairError("call_mistral must be callable.")
@@ -354,11 +367,6 @@ def repair_mistral_video_script(
     )
 
     response = call_mistral(request_body)
-
-    if not isinstance(response, Mapping):
-        raise MistralRepairError(
-            "call_mistral returned a non-object repair response."
-        )
 
     return validate_mistral_repair_response(
         response=response,
