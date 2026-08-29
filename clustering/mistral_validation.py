@@ -6,12 +6,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-
 MIN_SCENE_DURATION_SECONDS = 8
 MAX_SCENE_DURATION_SECONDS = 20
 
 MIN_WORDS_PER_SECOND = 2.1
 MAX_WORDS_PER_SECOND = 2.8
+
+REQUIRED_VISUAL_PROMPT_SUFFIX = (
+    "cinematic editorial news documentary, restrained colors, "
+    "natural lighting, realistic camera movement, clean composition, "
+    "16:9, no text, no logos, no watermark"
+)
 
 ALLOWED_VISUAL_TYPES = {
     "editorial_b_roll",
@@ -30,19 +35,24 @@ FORBIDDEN_VISUAL_PROMPT_PATTERNS = {
     "visible logo": r"(?<!no\s)\blogos?\b",
     "visible watermark": r"(?<!no\s)\bwatermarks?\b",
     "label": r"(?<!un)\blabel(?:ed|led|ing|s)?\b",
-    "labeled chart": r"\blabel(?:ed|led)\s+(?:bar\s+)?chart\b",
-    "bar chart": r"\bbar\s+chart\b",
-    "line chart": r"\bline\s+chart\b",
-    "pie chart": r"\bpie\s+chart\b",
-    "infographic": r"\binfographic\b",
-    "graph": r"\bgraph\b",
-    "table": r"\btable\b",
-    "percentage": r"\bpercentage\b",
+    "chart": r"\bcharts?\b",
+    "graph": r"\bgraphs?\b",
+    "table": r"\btables?\b",
+    "infographic": r"\binfographics?\b",
+    "dashboard": r"\bdashboards?\b",
+    "data visualization": r"\bdata\s+visuali[sz]ation\b",
+    "trend line": r"\btrend\s+lines?\b",
+    "connecting lines": r"\bconnecting\s+lines?\b",
+    "diagram": r"\bdiagrams?\b",
     "screen displaying": r"\bscreens?\s+displaying\b",
+    "monitor": r"\bmonitors?\b",
+    "television": r"\btelevisions?\b",
+    "phone": r"\bphones?\b",
+    "user interface": r"\buser\s+interfaces?\b",
+    "social post": r"\bsocial\s+(?:media\s+)?posts?\b",
     "signage": r"(?<!no\s)\bsignage\b",
     "document": r"(?<!no\s)\bdocuments?\b",
-    "social post": r"(?<!no\s)\bsocial\s+(?:media\s+)?posts?\b",
-    "news ticker": r"\bnews\s+ticker\b",
+    "newspaper": r"\bnewspapers?\b",
 }
 
 FORBIDDEN_FAKE_DOCUMENTARY_PATTERNS = {
@@ -77,7 +87,10 @@ FORBIDDEN_FAKE_DOCUMENTARY_PATTERNS = {
 FORBIDDEN_NARRATION_TERMS = {
     "run": r"\bruns?\b",
     "cluster": r"\bclusters?\b",
+    "clustering": r"\bclustering\b",
+    "window": r"\bwindows?\b",
     "lineage": r"\blineage\b",
+    "centroid": r"\bcentroids?\b",
     "anchor": r"\banchor\b",
     "threshold": r"\bthreshold\b",
     "payload": r"\bpayload\b",
@@ -85,11 +98,13 @@ FORBIDDEN_NARRATION_TERMS = {
     "overlap": r"\boverlap\b",
     "score": r"\bscore\b",
     "core": r"\bcore\b",
-    "edge": r"\bedge\b",
+    "edge": r"\bedges?\b",
     "outlier": r"\boutliers?\b",
     "subcluster": r"\bsubclusters?\b",
     "database": r"\bdatabase\b",
     "algorithm": r"\balgorithm\b",
+    "article count": r"\barticle\s+counts?\b",
+    "topic reference": r"\btopic\s+references?\b",
     "parent size": r"\bparent[_\s-]?size\b",
     "child size": r"\bchild[_\s-]?size\b",
 }
@@ -109,10 +124,7 @@ class VideoMetadata(BaseModel):
     language: Literal["en"]
     title: str = Field(min_length=5, max_length=160)
     description: str = Field(min_length=20, max_length=2000)
-    estimated_duration_seconds: int = Field(
-        ge=30,
-        le=3600,
-    )
+    estimated_duration_seconds: int = Field(ge=30, le=3600)
     editorial_angle: str = Field(min_length=10, max_length=500)
 
 
@@ -162,10 +174,7 @@ class MistralVideoScript(BaseModel):
 
 
 class MistralVideoValidationError(ValueError):
-    """
-    Raised when an LLM response is syntactically valid JSON but fails
-    required production, factual-safety, or media-generation invariants.
-    """
+    """Raised when a Mistral video script fails production validation."""
 
     def __init__(self, errors: list[str]) -> None:
         self.errors = errors
@@ -180,9 +189,6 @@ def _normalize_whitespace(value: str) -> str:
 
 
 def _word_count(value: str) -> int:
-    """
-    Counts English-like words and also tolerates Cyrillic tokens in labels.
-    """
     return len(
         re.findall(
             r"[A-Za-zА-Яа-яЁё0-9]+(?:['’-][A-Za-zА-Яа-яЁё0-9]+)?",
@@ -196,49 +202,28 @@ def _find_pattern_matches(
     patterns: dict[str, str],
 ) -> list[str]:
     """
-    Finds forbidden prompt terms while allowing the mandatory negative suffix:
-    'no text, no logos, no watermark'.
+    Find forbidden terms while allowing the required negative safety suffix.
 
-    The function does not treat explicit negative safety instructions as a
-    request to generate those elements.
+    The suffix includes "no text", "no logos", and "no watermark"; these are
+    protective instructions, not a request to render the named elements.
     """
     normalized = _normalize_whitespace(value).lower()
 
-    normalized = re.sub(
+    negative_forms = [
         r"\bno\s+(?:readable\s+)?text\b",
-        "",
-        normalized,
-    )
-    normalized = re.sub(
         r"\bno\s+logos?\b",
-        "",
-        normalized,
-    )
-    normalized = re.sub(
         r"\bno\s+watermarks?\b",
-        "",
-        normalized,
-    )
-    normalized = re.sub(
         r"\bno\s+captions?\b",
-        "",
-        normalized,
-    )
-    normalized = re.sub(
         r"\bno\s+subtitles?\b",
-        "",
-        normalized,
-    )
-    normalized = re.sub(
         r"\bno\s+headlines?\b",
-        "",
-        normalized,
-    )
-    normalized = re.sub(
         r"\bno\s+(?:news\s+)?ticker\b",
-        "",
-        normalized,
-    )
+        r"\bno\s+labels?\b",
+        r"\bno\s+documents?\b",
+        r"\bno\s+signage\b",
+    ]
+
+    for pattern in negative_forms:
+        normalized = re.sub(pattern, "", normalized)
 
     matches: list[str] = []
 
@@ -250,12 +235,15 @@ def _find_pattern_matches(
 
 
 def _scene_word_bounds(duration_seconds: int) -> tuple[int, int]:
-    min_words = round(duration_seconds * MIN_WORDS_PER_SECOND)
-    max_words = round(duration_seconds * MAX_WORDS_PER_SECOND)
-    return min_words, max_words
+    return (
+        round(duration_seconds * MIN_WORDS_PER_SECOND),
+        round(duration_seconds * MAX_WORDS_PER_SECOND),
+    )
 
 
-def _allowed_topic_names(input_payload: dict[str, Any]) -> set[str]:
+def _allowed_topic_references(
+    input_payload: dict[str, Any],
+) -> set[str]:
     editorial_topics = input_payload.get("editorial_topics")
 
     if not isinstance(editorial_topics, list):
@@ -263,7 +251,7 @@ def _allowed_topic_names(input_payload: dict[str, Any]) -> set[str]:
             "input_payload.editorial_topics must be a list for validation"
         )
 
-    names: set[str] = set()
+    references: set[str] = set()
 
     for topic in editorial_topics:
         if not isinstance(topic, dict):
@@ -271,21 +259,48 @@ def _allowed_topic_names(input_payload: dict[str, Any]) -> set[str]:
                 "input_payload.editorial_topics must contain objects"
             )
 
-        topic_name = topic.get("topic_name")
+        reference = topic.get("topic_reference")
 
-        if not isinstance(topic_name, str) or not topic_name.strip():
+        if not isinstance(reference, str) or not reference.strip():
             raise ValueError(
-                "Each input_payload.editorial_topics item must have topic_name"
+                "Each editorial topic must contain a non-empty "
+                "topic_reference"
             )
 
-        names.add(topic_name)
+        references.add(reference)
 
-    if not names:
+    if not references:
         raise ValueError(
             "input_payload.editorial_topics must contain at least one topic"
         )
 
-    return names
+    return references
+
+
+def _allowed_source_names(
+    input_payload: dict[str, Any],
+) -> set[str]:
+    sources: set[str] = set()
+
+    editorial_topics = input_payload.get("editorial_topics")
+
+    if not isinstance(editorial_topics, list):
+        return sources
+
+    for topic in editorial_topics:
+        if not isinstance(topic, dict):
+            continue
+
+        for article in topic.get("evidence_articles") or []:
+            if not isinstance(article, dict):
+                continue
+
+            source_name = article.get("source_name")
+
+            if isinstance(source_name, str) and source_name.strip():
+                sources.add(source_name.casefold())
+
+    return sources
 
 
 def _expected_target_duration(input_payload: dict[str, Any]) -> int:
@@ -304,24 +319,30 @@ def _expected_target_duration(input_payload: dict[str, Any]) -> int:
             "must be an integer"
         )
 
-    if duration < 30:
+    if not 30 <= duration <= 3600:
         raise ValueError(
             "input_payload.video_requirements.target_duration_seconds "
-            "must be at least 30"
+            "must be between 30 and 3600"
         )
 
     return duration
 
 
-def parse_mistral_video_script(
-    raw_content: str,
-) -> MistralVideoScript:
-    """
-    Parses raw Mistral message content and validates its JSON/Pydantic shape.
+def _source_names_mentioned(
+    narration: str,
+    allowed_sources: set[str],
+) -> set[str]:
+    low_narration = narration.casefold()
 
-    Runtime constraints such as word count, duration sum and visual safety
-    are validated separately by validate_mistral_video_script().
-    """
+    return {
+        source
+        for source in allowed_sources
+        if source in low_narration
+    }
+
+
+def parse_mistral_video_script(raw_content: str) -> MistralVideoScript:
+    """Parse JSON and validate the Pydantic object shape."""
     try:
         parsed = json.loads(raw_content)
     except json.JSONDecodeError as exc:
@@ -341,8 +362,9 @@ def parse_mistral_video_script(
 
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
-            message = error["msg"]
-            errors.append(f"Schema error at '{location}': {message}")
+            errors.append(
+                f"Schema error at '{location}': {error['msg']}"
+            )
 
         raise MistralVideoValidationError(errors) from exc
 
@@ -352,14 +374,17 @@ def validate_mistral_video_script(
     input_payload: dict[str, Any],
 ) -> None:
     """
-    Validates cross-field, duration, narration and visual-safety invariants.
+    Validate timing, source grounding, internal-language and visual invariants.
 
-    Raises MistralVideoValidationError if any production requirement fails.
+    It does not attempt to fact-check natural-language claims against article
+    bodies because the current database stores article titles, not full text.
+    It ensures that named sources were supplied in evidence articles.
     """
     errors: list[str] = []
 
     target_duration_seconds = _expected_target_duration(input_payload)
-    allowed_topics = _allowed_topic_names(input_payload)
+    allowed_references = _allowed_topic_references(input_payload)
+    allowed_sources = _allowed_source_names(input_payload)
 
     scenes = script.scenes
     scene_numbers = [scene.scene_number for scene in scenes]
@@ -426,39 +451,39 @@ def validate_mistral_video_script(
             f"actual={voiceover_word_count}"
         )
 
-    narration_texts = [
+    public_texts = [
         script.narration_script.full_voiceover,
         script.video_metadata.title,
         script.video_metadata.description,
         script.video_metadata.editorial_angle,
     ]
-    narration_texts.extend(scene.narration for scene in scenes)
+    public_texts.extend(scene.narration for scene in scenes)
 
-    for index, narration_text in enumerate(narration_texts):
+    for index, text in enumerate(public_texts):
         internal_terms = _find_pattern_matches(
-            narration_text,
+            text,
             FORBIDDEN_NARRATION_TERMS,
         )
 
         if internal_terms:
             errors.append(
                 "Forbidden internal narration terms found in "
-                f"narration_text[{index}]: {', '.join(internal_terms)}"
+                f"public_text[{index}]: {', '.join(internal_terms)}"
             )
 
         first_person_terms = _find_pattern_matches(
-            narration_text,
+            text,
             FORBIDDEN_FIRST_PERSON_PATTERNS,
         )
 
         if first_person_terms:
             errors.append(
                 "First-person or direct-address terms found in "
-                f"narration_text[{index}]: "
+                f"public_text[{index}]: "
                 f"{', '.join(first_person_terms)}"
             )
 
-    all_scene_topics: set[str] = set()
+    all_scene_references: set[str] = set()
 
     for scene in scenes:
         scene_words = _word_count(scene.narration)
@@ -480,29 +505,68 @@ def validate_mistral_video_script(
                 f"{scene.duration_seconds} seconds, actual={scene_words}"
             )
 
-        invalid_topics = [
-            topic_name
-            for topic_name in scene.topic_references
-            if topic_name not in allowed_topics
+        invalid_references = [
+            reference
+            for reference in scene.topic_references
+            if reference not in allowed_references
         ]
 
-        if invalid_topics:
+        if invalid_references:
             errors.append(
                 f"Scene {scene.scene_number} has topic_references not found "
-                f"in editorial_topics: {invalid_topics}"
+                f"in editorial_topics: {invalid_references}"
             )
 
-        all_scene_topics.update(scene.topic_references)
+        all_scene_references.update(scene.topic_references)
 
-        text_matches = _find_pattern_matches(
+        mentioned_sources = _source_names_mentioned(
+            scene.narration,
+            allowed_sources,
+        )
+
+        unknown_attribution_matches = re.findall(
+            r"\b(?:according to|reported by|the)\s+"
+            r"([A-Z][A-Za-z0-9 .&'’-]{1,80})",
+            scene.narration,
+            flags=re.IGNORECASE,
+        )
+
+        for candidate in unknown_attribution_matches:
+            normalized_candidate = _normalize_whitespace(candidate).casefold()
+
+            if (
+                normalized_candidate
+                and normalized_candidate not in allowed_sources
+                and not any(
+                    source in normalized_candidate
+                    or normalized_candidate in source
+                    for source in allowed_sources
+                )
+            ):
+                errors.append(
+                    f"Scene {scene.scene_number} names a source not found "
+                    f"in evidence articles: {candidate!r}"
+                )
+
+        if (
+            re.search(r"\baccording to\b|\breported by\b", scene.narration,
+                      flags=re.IGNORECASE)
+            and not mentioned_sources
+        ):
+            errors.append(
+                f"Scene {scene.scene_number} uses source attribution but "
+                "does not mention a source supplied in evidence articles"
+            )
+
+        visual_matches = _find_pattern_matches(
             scene.visual_prompt,
             FORBIDDEN_VISUAL_PROMPT_PATTERNS,
         )
 
-        if text_matches:
+        if visual_matches:
             errors.append(
                 f"Scene {scene.scene_number} visual_prompt requests forbidden "
-                f"textual visual elements: {', '.join(text_matches)}"
+                f"visual elements: {', '.join(visual_matches)}"
             )
 
         fake_documentary_matches = _find_pattern_matches(
@@ -517,18 +581,12 @@ def validate_mistral_video_script(
                 f"{', '.join(fake_documentary_matches)}"
             )
 
-        expected_visual_suffix = (
-            "cinematic editorial news documentary, restrained colors, "
-            "natural lighting, realistic camera movement, clean composition, "
-            "16:9, no text, no logos, no watermark"
-        )
-
         normalized_prompt = _normalize_whitespace(
             scene.visual_prompt
-        ).lower()
+        ).casefold()
         normalized_suffix = _normalize_whitespace(
-            expected_visual_suffix
-        ).lower()
+            REQUIRED_VISUAL_PROMPT_SUFFIX
+        ).casefold()
 
         if not normalized_prompt.endswith(normalized_suffix):
             errors.append(
@@ -543,22 +601,22 @@ def validate_mistral_video_script(
         "declining_topics": script.coverage_summary.declining_topics,
     }
 
-    for field_name, topic_names in summary_lists.items():
-        invalid_topics = [
-            topic_name
-            for topic_name in topic_names
-            if topic_name not in allowed_topics
+    for field_name, references in summary_lists.items():
+        invalid_references = [
+            reference
+            for reference in references
+            if reference not in allowed_references
         ]
 
-        if invalid_topics:
+        if invalid_references:
             errors.append(
-                f"coverage_summary.{field_name} contains topics not present "
-                f"in editorial_topics: {invalid_topics}"
+                f"coverage_summary.{field_name} contains references not "
+                f"present in editorial_topics: {invalid_references}"
             )
 
-    if not all_scene_topics:
+    if not all_scene_references:
         errors.append(
-            "At least one editorial topic must be referenced by the scenes"
+            "At least one editorial topic must be referenced by scenes"
         )
 
     if not script.fact_check_notes:
@@ -572,14 +630,7 @@ def parse_and_validate_mistral_video_script(
     raw_content: str,
     input_payload: dict[str, Any],
 ) -> MistralVideoScript:
-    """
-    One-call helper for normal pipeline use.
-
-    1. Parse raw Mistral content as JSON.
-    2. Validate the Pydantic schema.
-    3. Validate production rules against the original input payload.
-    4. Return a typed script only when every rule passes.
-    """
+    """Parse raw Mistral JSON and apply the full production validation."""
     script = parse_mistral_video_script(raw_content)
     validate_mistral_video_script(script, input_payload)
     return script

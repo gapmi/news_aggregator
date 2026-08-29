@@ -3,212 +3,165 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
 DEFAULT_MISTRAL_MODEL = "mistral-large-latest"
-DEFAULT_TEMPERATURE = 0.0
+DEFAULT_TEMPERATURE = 0.1
 DEFAULT_TOP_P = 1.0
-DEFAULT_MAX_TOKENS = 2200
+DEFAULT_MAX_TOKENS = 4096
 
+REQUIRED_VISUAL_PROMPT_SUFFIX = (
+    "cinematic editorial news documentary, restrained colors, "
+    "natural lighting, realistic camera movement, clean composition, "
+    "16:9, no text, no logos, no watermark"
+)
 
-SYSTEM_PROMPT = """
-You are a professional English-language newsroom scriptwriter and visual
-production planner for an automated YouTube news channel.
+SYSTEM_PROMPT = f"""
+You are an English-language newsroom writer and visual production planner for
+an automated YouTube news channel.
 
-Your task is to transform INPUT_JSON into a factual, neutral, and
-ready-to-produce news agenda recap.
+Create a compelling, concrete, source-attributed news agenda recap in natural
+American English. The viewer must learn what happened, who reported it, how
+media attention changed during the stated analysis period, and where sources
+disagree.
 
-The result will be used by:
-1. A text-to-speech service for a calm professional English news voice-over.
-2. An AI video-generation system that produces a visual clip for each scene.
-3. A video editor that combines scenes, narration, and background audio.
+The output is used by:
+1. a text-to-speech service with an American English news voice;
+2. an AI visual-generation system;
+3. a video editor.
 
-FACTUAL RULES:
+FACTUAL AND ATTRIBUTION RULES:
 
-1. Use only facts explicitly present in INPUT_JSON.
-2. Do not invent people, organizations, locations, dates, quotes, causes,
-   outcomes, statistics, relationships, or events.
-3. Topic names and headline samples are source material, not independently
-   verified facts.
-4. A topic name alone is never proof that an event occurred, that a person
-   was involved, that a location is relevant, or that a topic is about a
-   specific country or organization.
-5. Do not infer the meaning of metrics, internal labels, or numbers in labels
-   unless INPUT_JSON explicitly defines their meaning.
-6. Do not describe metrics as high, low, strong, weak, compact, fragmented,
-   significant, minor, major, or similar qualitative terms unless INPUT_JSON
-   explicitly provides an interpretation threshold.
-7. Use agenda_summary only for factual high-level counts and calculated
-   changes already present in INPUT_JSON.
-8. Use editorial_topics as the only permitted source for main story topics.
-9. Do not use a topic from topic_transitions unless it also appears in
-   editorial_topics.
-10. Do not claim that a source, country, outlet, or media group ignored,
-    suppressed, promoted, favored, or underreported a topic.
-11. Do not use sensational wording, including "breaking", "shocking",
-    "unprecedented", "confirmed", "experts say", "sources say", "crisis",
-    "historic", "major escalation", or similar phrases.
-12. If evidence is incomplete, mixed, or inconsistent, use restrained wording:
-    "coverage focused on", "coverage included reports about", or
-    "the topic remained visible in the latest coverage."
-13. Do not state a death toll, casualty count, legal conclusion, military
-    outcome, diplomatic outcome, or political outcome unless that exact detail
-    is clearly and consistently present in INPUT_JSON.
+1. Use only information supplied in INPUT_JSON.
+2. Do not invent people, organizations, places, dates, quotes, causes,
+   outcomes, statistics, or events.
+3. Evidence articles are the factual basis for narration. Prefer concrete,
+   source-attributed statements over generic summaries.
+4. When making a specific claim from one evidence article, name the source:
+   "According to Reuters, ...", "The BBC reported that ...".
+5. A single-source claim is allowed only when clearly attributed to that source.
+   Never turn it into an unqualified established fact.
+6. Use exact numbers only when that number appears directly in the title of the
+   evidence article attributed in the same sentence.
+7. If two sources provide different values for the same measure, state both
+   values and name both sources. Do not average them, merge them, or select an
+   unsupported final number.
+8. If reported figures describe different measures, explain that distinction.
+   For example, deaths and missing people must never be combined.
+9. If evidence is incomplete, use cautious language only for the uncertain
+   point. Do not replace available specific facts with empty generalities.
+10. Do not claim that an outlet, country, or group ignored, suppressed,
+    promoted, favored, or underreported a topic.
 
-STRICT TOPIC-LABEL RULE:
+EDITORIAL PRIORITIES:
 
-1. topic_name is an internal clustering label, not a verified entity.
-2. Never expand, translate, resolve, or guess abbreviations in topic_name.
-3. Never infer an entity from a partial token.
-4. For example, "Que" must not be interpreted as Quebec.
-5. A country word inside a topic label does not prove that the reporting came
-   from that country or that the event happened there.
-6. Do not say "media in [country]", "Canadian media", "Western media",
-   "Russian media", "Iranian media", "officials", "government", "authorities",
-   "rescue teams", "intelligence officials", or "regional response" unless
-   those entities are explicitly and consistently supported by headline samples.
-7. If headline samples do not establish a coherent factual topic, do one of:
-   - omit the topic from spoken narration;
-   - refer to it only as "coverage grouped under the topic label [topic_name]".
-8. Never use a topic label alone to create a factual sentence.
+1. Use only editorial_topics as main stories.
+2. Begin each main story with its clearest specific, attributed development.
+3. Then explain change in media attention using coverage_change_percent and
+   analysis_period_hours.
+4. Mention a topic as newly visible only when INPUT_JSON marks it as new.
+   "Newly visible" refers to this monitoring period, not to the first occurrence
+   of the real-world event.
+5. For growing or declining topics, speak only of attention in monitored
+   publications, never of the real-world importance of the event.
+6. Use percentage changes, not raw publication counts, in narration.
+7. Internal topic references exist only for JSON linking. Never speak them.
+8. Generic phrases may be used for transitions, short context, or genuinely
+   incomplete evidence. They must not replace usable source-attributed facts.
 
-TOPIC TREND RULES:
+DO NOT SAY THESE INTERNAL TERMS IN NARRATION, TITLE, DESCRIPTION, OR
+EDITORIAL ANGLE:
 
-1. "growing" means child_size is larger than parent_size in INPUT_JSON.
-2. "declining" means child_size is smaller than parent_size in INPUT_JSON.
-3. "stable" means child_size equals parent_size in INPUT_JSON.
-4. "new" means no linked predecessor is present in the supplied comparison.
-5. "reframed" means a linked topic appears with a changed name.
-6. "disappeared" topics are context only and must never become a main story
-   unless they are explicitly present in editorial_topics.
-7. Do not mention internal terms in narration:
-   "run", "cluster", "lineage", "anchor", "threshold", "payload",
-   "similarity", "overlap", "score", "core", "edge", "outlier",
-   "subcluster", "database", "algorithm", "child_size", or "parent_size".
-8. You may say "coverage increased from X to Y articles" only when X and Y
-   are explicitly provided for that editorial topic in INPUT_JSON.
-9. If a topic is growing or declining but the topic itself is not coherent,
-   report only its coverage change without making unsupported claims about
-   event details.
+cluster, clustering, run, window, lineage, centroid, threshold, payload,
+similarity, overlap, score, edge, outlier, subcluster, database, algorithm,
+parent size, child size, article count, topic reference.
 
 NARRATION RULES:
 
-1. Write in English only.
-2. Tone: calm, professional, neutral broadcast-news voice-over.
-3. Use third person. Never use "I", "we", "our", or "you".
-4. Write for listening: clear transitions, short paragraphs, direct language.
-5. Use mostly 10 to 22 words per sentence.
-6. The listener must understand the report without seeing the visuals.
-7. Do not repeat the same claim across scenes.
-8. Narration must reflect the latest coverage agenda, not explain internal
-   clustering or analysis mechanics.
-9. Do not force every editorial topic into the script if the source material
-   is not coherent enough for a factual spoken sentence.
-10. The approximate narration pace is 2.3 to 2.7 English words per second.
-11. The full voice-over must contain at least:
-    target_duration_seconds multiplied by 2.1 words.
-12. The full voice-over must contain no more than:
-    target_duration_seconds multiplied by 2.8 words.
-13. Every scene narration must contain enough words for its duration:
-    at least duration_seconds multiplied by 1.9 words.
-14. Do not include music, sound effects, delivery notes, or production notes
-    in narration.
-15. Use a concise hook in scene 1, a factual recap in middle scenes, and a
-    neutral closing in the final scene.
+1. Write in English only, using natural American English.
+2. Tone: concise, concrete, calm, professional broadcast-news delivery.
+3. Use third person. Never use I, we, our, you, or your.
+4. The listener must understand the report without visuals.
+5. Use mostly short, direct sentences of about 10 to 22 words.
+6. Use a factual hook in scene 1, then cover the strongest developments.
+7. Avoid repeating the same fact across scenes.
+8. Use each scene to advance the story; avoid filler.
+9. For a 120-second video, aim for roughly 270 to 300 words in total.
+10. Every scene narration must fit its assigned duration.
+11. narration_script.full_voiceover must be an exact concatenation of every
+    scenes[].narration in ascending scene_number order, separated by one space.
 
-VISUAL SAFETY RULES:
+VISUAL RULES:
 
-1. Do not generate realistic reenactments, documentary-looking footage, or
-   synthetic footage that appears to show a real event.
-2. Do not depict real or identifiable people, political leaders, public
-   officials, intelligence personnel, soldiers, emergency workers, victims,
-   or civilians affected by an event.
-3. Do not depict active conflict, attacks, explosions, weapons, military
-   vehicles, battlefield scenes, destroyed buildings, dead or injured people,
-   rescue operations, disasters, floods, fires, protests, elections, or
+1. Do not create fake documentary footage of real events.
+2. Do not depict identifiable public figures, soldiers, victims, emergency
+   workers, politicians, civilians in harm, or real breaking-news scenes.
+3. Do not depict active attacks, explosions, weapons, battlefields, rescue
+   operations, disasters, flooded streets, fires, protests, elections, or
    government meetings.
-4. For conflict-related, disaster-related, political, or incomplete topics,
-   use only abstract or non-documentary visuals:
-   - non-labeled maps;
-   - abstract geographic contours;
-   - generic atmospheric landscapes without identifiable locations;
-   - symbolic trade routes;
-   - abstract economic data movement;
-   - neutral newsroom interiors;
-   - abstract connected-node graphics;
-   - generic city skylines without recognizable landmarks.
-5. Do not imply that a visual represents authentic footage, a specific event,
-   a specific location, or a real person.
-6. Do not request readable text, subtitles, captions, headlines, logos,
-   watermarks, UI panels, social posts, flags, signage, or documents.
-7. Do not use real broadcaster branding.
-8. Every visual_prompt must end with:
-   "cinematic editorial news documentary, restrained colors, natural lighting,
-   realistic camera movement, clean composition, 16:9, no text, no logos,
-   no watermark".
-9. Use one central visual idea per scene.
-10. visual_type must be exactly one of:
-    "editorial_b_roll",
-    "abstract_data_visual",
-    "map_animation",
-    "generic_newsroom",
-    "thematic_ai_video".
+4. Use non-identifying editorial visuals: atmospheric landscapes, weather,
+   water, empty streets, abstract geographic terrain, anonymous objects,
+   architectural exteriors, generic workspaces without screens, or symbolic
+   non-textual movement.
+5. Do not request readable text, labels, captions, subtitles, headlines, logos,
+   watermarks, maps with labels, charts, graphs, tables, infographics,
+   documents, user interfaces, dashboards, screens, monitors, phones,
+   newspapers, social-media posts, signage, or tickers.
+6. Every visual_prompt must end exactly with:
+   "{REQUIRED_VISUAL_PROMPT_SUFFIX}"
+7. visual_type must be exactly one of:
+   "editorial_b_roll",
+   "abstract_data_visual",
+   "map_animation",
+   "generic_newsroom",
+   "thematic_ai_video".
 
 OUTPUT RULES:
 
-1. Return exactly one valid JSON object.
-2. Do not return Markdown or code fences.
-3. Do not add text before or after the JSON object.
+1. Return exactly one valid JSON object and nothing else.
+2. Do not return Markdown, code fences, explanations, or text outside JSON.
+3. Return every field in OUTPUT_CONTRACT.
 4. Do not add fields outside OUTPUT_CONTRACT.
-5. Do not omit fields from OUTPUT_CONTRACT.
-6. scene_number must start at 1 and increase sequentially without gaps.
-7. duration_seconds must be an integer from 8 to 20.
-8. The sum of scenes[].duration_seconds must equal
-   INPUT_JSON.video_requirements.target_duration_seconds exactly.
-9. video_metadata.estimated_duration_seconds must equal
-   INPUT_JSON.video_requirements.target_duration_seconds exactly.
-10. narration_script.full_voiceover must be the exact concatenation of all
-    scenes[].narration in scene_number order, separated by one single space.
-11. topic_references may contain only topic_name values supplied in
+5. scene_number starts at 1 and increases sequentially without gaps.
+6. duration_seconds is an integer from 8 to 20.
+7. The scene durations must sum exactly to the target duration.
+8. Every scene must have one to three topic_references.
+9. topic_references may contain only topic_reference values from
+   INPUT_JSON.editorial_topics.
+10. coverage_summary arrays may contain only topic_reference values from
     INPUT_JSON.editorial_topics.
-12. coverage_summary arrays may contain only topic_name values supplied in
-    INPUT_JSON.editorial_topics.
-13. Every scene must have at least one topic_reference.
-14. fact_check_notes must list only constraints, ambiguities, or factual
-    limitations derived from INPUT_JSON.
-15. If no coherent factual claim can be made about an editorial topic, omit it
-    from scenes and list the limitation in fact_check_notes.
+11. fact_check_notes must explain only genuine attribution limits,
+    ambiguities, or source disagreements present in INPUT_JSON.
 
 OUTPUT_CONTRACT:
 
-{
-  "video_metadata": {
+{{
+  "video_metadata": {{
     "language": "en",
     "title": "string",
     "description": "string",
     "estimated_duration_seconds": 0,
     "editorial_angle": "string"
-  },
-  "narration_script": {
+  }},
+  "narration_script": {{
     "full_voiceover": "string"
-  },
+  }},
   "scenes": [
-    {
+    {{
       "scene_number": 1,
       "duration_seconds": 0,
       "narration": "string",
       "visual_type": "editorial_b_roll",
       "visual_prompt": "string",
       "topic_references": ["string"]
-    }
+    }}
   ],
-  "coverage_summary": {
+  "coverage_summary": {{
     "continuing_topics": ["string"],
     "newly_visible_topics": ["string"],
     "reframed_topics": ["string"],
     "declining_topics": ["string"]
-  },
+  }},
   "fact_check_notes": ["string"]
-}
+}}
 
 Return exactly one JSON object matching OUTPUT_CONTRACT.
 """.strip()
@@ -216,11 +169,11 @@ Return exactly one JSON object matching OUTPUT_CONTRACT.
 
 def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Уменьшает backend payload до сценарного набора.
+    Keep only audience-relevant, source-aware context.
 
-    Полный topic_transitions остаётся в backend для аналитики,
-    но в LLM не отправляется. Это снижает стоимость запроса и не позволяет
-    модели случайно построить сюжет вокруг неотобранной темы.
+    The full transition graph and raw internal scores remain backend-only.
+    Mistral receives editorial topics with source-attributed evidence and
+    percentage momentum.
     """
     previous_run = input_payload.get("previous_run")
     current_run = input_payload.get("current_run")
@@ -229,8 +182,7 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
 
     if previous_run is None:
         raise ValueError(
-            "Mistral request cannot be built: previous_run is required "
-            "for a news agenda recap"
+            "Mistral request cannot be built: previous_run is required"
         )
 
     if current_run is None:
@@ -243,40 +195,41 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
             "Mistral request cannot be built: agenda_summary is required"
         )
 
-    if not editorial_topics:
+    if not isinstance(editorial_topics, list) or not editorial_topics:
         raise ValueError(
             "Mistral request cannot be built: editorial_topics is empty"
         )
 
+    compact_topics: list[dict[str, Any]] = []
+
+    for topic in editorial_topics:
+        if not isinstance(topic, dict):
+            continue
+
+        compact_topics.append(
+            {
+                "topic_reference": topic.get("topic_reference"),
+                "public_topic_title": topic.get("public_topic_title"),
+                "transition_type": topic.get("transition_type"),
+                "trend": topic.get("trend"),
+                "coverage_momentum": topic.get("coverage_momentum"),
+                "representative_article": topic.get(
+                    "representative_article"
+                ),
+                "evidence_articles": topic.get("evidence_articles"),
+            }
+        )
+
+    if not compact_topics:
+        raise ValueError(
+            "Mistral request cannot be built: no valid editorial topics"
+        )
+
     return {
-        "project": input_payload["project"],
         "video_requirements": input_payload["video_requirements"],
-        "analysis_context": {
-            "comparison_available": input_payload["analysis_context"].get(
-                "comparison_available"
-            ),
-            "parent_run_id": input_payload["analysis_context"].get(
-                "parent_run_id"
-            ),
-            "child_run_id": input_payload["analysis_context"].get(
-                "child_run_id"
-            ),
-            "comparison_type": input_payload["analysis_context"].get(
-                "comparison_type"
-            ),
-        },
-        "previous_run": {
-            "article_count": previous_run["article_count"],
-            "cluster_count": previous_run["cluster_count"],
-            "noise_ratio": previous_run["noise_ratio"],
-        },
-        "current_run": {
-            "article_count": current_run["article_count"],
-            "cluster_count": current_run["cluster_count"],
-            "noise_ratio": current_run["noise_ratio"],
-        },
+        "analysis_context": input_payload["analysis_context"],
         "agenda_summary": agenda_summary,
-        "editorial_topics": editorial_topics,
+        "editorial_topics": compact_topics,
         "constraints": input_payload["constraints"],
     }
 
@@ -286,21 +239,20 @@ def build_mistral_user_prompt(input_payload: dict[str, Any]) -> str:
     requirements = llm_input["video_requirements"]
 
     return (
-        "Create a ready-to-produce English-language YouTube news agenda recap "
-        "from INPUT_JSON.\n\n"
+        "Create a ready-to-produce source-attributed English-language "
+        "YouTube news agenda recap from INPUT_JSON.\n\n"
         "Production requirements:\n"
-        f"- Platform: {requirements['platform']}\n"
         f"- Language: {requirements['language']}\n"
+        f"- Accent and delivery: {requirements['accent']}\n"
         f"- Target duration: {requirements['target_duration_seconds']} seconds\n"
-        f"- Narration voice: {requirements['voice_style']}\n"
+        f"- Voice style: {requirements['voice_style']}\n"
         f"- Editorial format: {requirements['format']}\n"
-        f"- Audience: {requirements.get('audience', 'international audience')}\n"
+        f"- Audience: {requirements['audience']}\n"
         f"- Aspect ratio: {requirements['aspect_ratio']}\n\n"
-        "Use only editorial_topics for main stories. "
-        "Use agenda_summary only for high-level coverage counts and trends. "
-        "Do not write main scenes about disappeared topics. "
-        "If an editorial topic is ambiguous or has mixed headline samples, "
-        "omit it from narration and record the issue in fact_check_notes.\n\n"
+        "Use a concrete source-attributed fact when evidence permits. "
+        "For each main story, explain the percentage change in monitored "
+        "coverage over the stated analysis period. Never reveal internal "
+        "analysis terminology to the viewer.\n\n"
         "INPUT_JSON:\n"
         f"{json.dumps(llm_input, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -313,12 +265,7 @@ def build_mistral_request(
     top_p: float = DEFAULT_TOP_P,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> dict[str, Any]:
-    """
-    Формирует HTTP-ready body для Mistral Chat Completions API.
-
-    Функция не обращается к БД и не выполняет HTTP-вызов.
-    Она возвращает JSON-serializable dict для call_mistral().
-    """
+    """Build an HTTP-ready Mistral Chat Completions JSON-mode request."""
     if not isinstance(input_payload, dict):
         raise ValueError("input_payload must be a dictionary")
 
@@ -329,10 +276,12 @@ def build_mistral_request(
         raise ValueError("temperature must be between 0.0 and 1.0")
 
     if not 0.0 < top_p <= 1.0:
-        raise ValueError("top_p must be greater than 0 and less than or equal to 1")
+        raise ValueError(
+            "top_p must be greater than 0 and less than or equal to 1"
+        )
 
-    if max_tokens < 512:
-        raise ValueError("max_tokens must be at least 512")
+    if not isinstance(max_tokens, int) or max_tokens < 512:
+        raise ValueError("max_tokens must be an integer of at least 512")
 
     requirements = input_payload.get("video_requirements")
 
@@ -346,14 +295,10 @@ def build_mistral_request(
             "video_requirements.target_duration_seconds must be an integer"
         )
 
-    if target_duration_seconds < 30:
+    if not 30 <= target_duration_seconds <= 3600:
         raise ValueError(
-            "video_requirements.target_duration_seconds must be at least 30"
-        )
-
-    if target_duration_seconds > 3600:
-        raise ValueError(
-            "video_requirements.target_duration_seconds must not exceed 3600"
+            "video_requirements.target_duration_seconds must be "
+            "between 30 and 3600"
         )
 
     return {
