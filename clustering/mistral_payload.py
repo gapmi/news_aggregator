@@ -4,7 +4,10 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import psycopg2.extras
+
+from clustering.offline import parse_embedding
 
 DEFAULT_TARGET_DURATION_SECONDS = 120
 DEFAULT_MAX_TOPICS = 6
@@ -14,6 +17,8 @@ DEFAULT_MAX_REFRAMED_TOPICS = 2
 DEFAULT_MAX_CONTINUING_TOPICS = 5
 
 MIN_EDITORIAL_EVIDENCE_ARTICLES = 2
+MIN_CENTRAL_EVIDENCE_SIMILARITY = 0.72
+MAX_CANDIDATE_EVIDENCE_ARTICLES = 40
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -25,12 +30,6 @@ def _normalize_whitespace(value: str | None) -> str:
 
 
 def _safe_topic_name(row: dict[str, Any]) -> str:
-    """
-    Return an internal topic reference.
-
-    This is not a public news headline and must not be spoken by the narrator.
-    Public editorial meaning comes from evidence article titles.
-    """
     return (
         row.get("name_title")
         or row.get("name_short")
@@ -43,13 +42,6 @@ def _public_topic_title(
     representative_article: dict[str, Any] | None,
     fallback_title: str | None,
 ) -> str:
-    """
-    Build a public-facing editorial title from an actual article title.
-
-    Topic labels produced by keyword extraction can be fragmentary. The
-    representative article is closest to the topic centroid, so its title is
-    the safest available public summary of the story.
-    """
     if representative_article is not None:
         title = _normalize_whitespace(
             representative_article.get("title")
@@ -77,12 +69,6 @@ def _normalize_topic_name(value: str) -> str:
 
 
 def _normalize_source_name(value: Any) -> str | None:
-    """
-    Return a publication/source name suitable for on-air attribution.
-
-    articles.source is the available source field in the current schema.
-    Empty values remain None and are not offered as evidence to Mistral.
-    """
     if not isinstance(value, str):
         return None
 
@@ -94,11 +80,58 @@ def _normalize_source_name(value: Any) -> str | None:
     return normalized[:160]
 
 
+def _cosine_similarity(
+    article_embedding: Any,
+    centroid: Any,
+) -> float | None:
+    """
+    Return cosine similarity between an article and a topic centroid.
+
+    pgvector values arrive through psycopg2 as Vector objects. The existing
+    parse_embedding() from offline.py handles Vector and list-like variants.
+    """
+    try:
+        article_vector = parse_embedding(article_embedding)
+        centroid_vector = parse_embedding(centroid)
+    except Exception:
+        return None
+
+    if article_vector is None or centroid_vector is None:
+        return None
+
+    article_vector = np.asarray(article_vector, dtype=np.float32).reshape(-1)
+    centroid_vector = np.asarray(centroid_vector, dtype=np.float32).reshape(-1)
+
+    if article_vector.size == 0 or centroid_vector.size == 0:
+        return None
+
+    if article_vector.shape != centroid_vector.shape:
+        return None
+
+    if not np.isfinite(article_vector).all():
+        return None
+
+    if not np.isfinite(centroid_vector).all():
+        return None
+
+    article_norm = float(np.linalg.norm(article_vector))
+    centroid_norm = float(np.linalg.norm(centroid_vector))
+
+    if article_norm == 0.0 or centroid_norm == 0.0:
+        return None
+
+    similarity = float(
+        np.dot(article_vector, centroid_vector)
+        / (article_norm * centroid_norm)
+    )
+
+    return max(min(similarity, 1.0), -1.0)
+
+
 def get_previous_completed_run_id(
     conn,
     child_run_id: int,
 ) -> int | None:
-    """Return the nearest earlier completed clustering run."""
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -175,22 +208,21 @@ def _load_run(conn, run_id: int) -> dict[str, Any]:
     }
 
 
-def _load_evidence_articles(
+def _load_central_evidence_articles(
     conn,
     *,
     cluster_id: int,
+    centroid: Any,
     representative_article_id: int | None,
     limit: int,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """
-    Load a centroid-nearest representative article plus diverse supporting items.
+    Select source-attributed evidence near the topic centroid.
 
-    The representative article ID was selected during clustering as the article
-    closest to the cluster centroid. Supporting evidence is selected from the
-    same topic with a preference for source diversity and recency.
-
-    The current database has no persisted per-article centroid distance, so
-    only representative_article_id is guaranteed centroid-near.
+    The query first retrieves up to MAX_CANDIDATE_EVIDENCE_ARTICLES from the
+    topic. Python computes cosine similarity because no distance is persisted
+    in cluster_articles. The model sees only final source/title/date/URL data,
+    not embeddings, similarity scores, cluster IDs, or other internal values.
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -201,26 +233,22 @@ def _load_evidence_articles(
                 a.url,
                 a.published,
                 a.source,
-                CASE
-                    WHEN a.id = %s THEN 0
-                    ELSE 1
-                END AS representative_rank
+                a.embedding
             FROM cluster_articles ca
             JOIN articles a
               ON a.id = ca.article_id
             WHERE ca.cluster_id = %s
               AND a.title IS NOT NULL
               AND BTRIM(a.title) <> ''
-            ORDER BY
-                representative_rank ASC,
-                a.published DESC NULLS LAST,
-                a.id DESC
+              AND a.embedding IS NOT NULL
+            ORDER BY a.published DESC NULLS LAST, a.id DESC
+            LIMIT %s
             """,
-            (representative_article_id, cluster_id),
+            (cluster_id, MAX_CANDIDATE_EVIDENCE_ARTICLES),
         )
         rows = cur.fetchall()
 
-    normalized_rows: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
 
     for row in rows:
         title = _normalize_whitespace(row["title"])
@@ -229,7 +257,15 @@ def _load_evidence_articles(
         if not title or source_name is None:
             continue
 
-        normalized_rows.append(
+        similarity = _cosine_similarity(
+            row["embedding"],
+            centroid,
+        )
+
+        if similarity is None:
+            continue
+
+        candidates.append(
             {
                 "article_id": int(row["id"]),
                 "source_name": source_name,
@@ -240,55 +276,91 @@ def _load_evidence_articles(
                     representative_article_id is not None
                     and int(row["id"]) == representative_article_id
                 ),
+                "_similarity": similarity,
             }
         )
+
+    candidates.sort(
+        key=lambda article: (
+            not article["is_representative"],
+            -float(article["_similarity"]),
+            article["published_at"] or "",
+            article["article_id"],
+        )
+    )
 
     representative_article = next(
         (
             article
-            for article in normalized_rows
+            for article in candidates
             if article["is_representative"]
         ),
         None,
     )
+
+    central_candidates = [
+        article
+        for article in candidates
+        if (
+            article["is_representative"]
+            or article["_similarity"] >= MIN_CENTRAL_EVIDENCE_SIMILARITY
+        )
+    ]
 
     selected: list[dict[str, Any]] = []
     seen_article_ids: set[int] = set()
     seen_title_keys: set[str] = set()
     seen_sources: set[str] = set()
 
-    def add_article(article: dict[str, Any]) -> bool:
-        article_id = article["article_id"]
-        title_key = article["title"].casefold()
+    def add(article: dict[str, Any]) -> bool:
+        article_id = int(article["article_id"])
+        title_key = str(article["title"]).casefold()
 
         if article_id in seen_article_ids or title_key in seen_title_keys:
             return False
 
-        selected.append(article)
+        cleaned = {
+            key: value
+            for key, value in article.items()
+            if key != "_similarity"
+        }
+
+        selected.append(cleaned)
         seen_article_ids.add(article_id)
         seen_title_keys.add(title_key)
-        seen_sources.add(article["source_name"].casefold())
+        seen_sources.add(str(article["source_name"]).casefold())
         return True
 
     if representative_article is not None:
-        add_article(representative_article)
+        add(representative_article)
 
-    for article in normalized_rows:
+    for article in central_candidates:
         if len(selected) >= limit:
             break
 
-        if article["source_name"].casefold() in seen_sources:
+        source_key = str(article["source_name"]).casefold()
+
+        if source_key in seen_sources:
             continue
 
-        add_article(article)
+        add(article)
 
-    for article in normalized_rows:
+    for article in central_candidates:
         if len(selected) >= limit:
             break
 
-        add_article(article)
+        add(article)
 
-    return representative_article, selected
+    cleaned_representative = None
+
+    if representative_article is not None:
+        cleaned_representative = {
+            key: value
+            for key, value in representative_article.items()
+            if key != "_similarity"
+        }
+
+    return cleaned_representative, selected
 
 
 def _load_clusters_with_evidence(
@@ -297,12 +369,6 @@ def _load_clusters_with_evidence(
     run_id: int,
     evidence_articles_per_topic: int,
 ) -> list[dict[str, Any]]:
-    """
-    Load cluster metadata and source-attributed evidence for a run.
-
-    Internal labels are retained only as stable references. The public editorial
-    description is derived from the representative article and evidence list.
-    """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -313,6 +379,7 @@ def _load_clusters_with_evidence(
                 c.size,
                 c.representative_article_id,
                 c.representative_title,
+                c.centroid,
                 c.origin_type,
                 c.quality_score,
                 c.is_oversized,
@@ -335,7 +402,7 @@ def _load_clusters_with_evidence(
         )
         rows = cur.fetchall()
 
-    clusters: list[dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
 
     for row in rows:
         cluster_id = int(row["id"])
@@ -344,43 +411,37 @@ def _load_clusters_with_evidence(
         if representative_article_id is not None:
             representative_article_id = int(representative_article_id)
 
-        representative_article, evidence_articles = _load_evidence_articles(
-            conn,
-            cluster_id=cluster_id,
-            representative_article_id=representative_article_id,
-            limit=evidence_articles_per_topic,
+        representative_article, evidence_articles = (
+            _load_central_evidence_articles(
+                conn,
+                cluster_id=cluster_id,
+                centroid=row["centroid"],
+                representative_article_id=representative_article_id,
+                limit=evidence_articles_per_topic,
+            )
         )
 
-        internal_topic_reference = _safe_topic_name(row)
-        public_title = _public_topic_title(
-            representative_article,
-            row["representative_title"],
-        )
-
-        clusters.append(
+        result.append(
             {
                 "cluster_id": cluster_id,
                 "run_id": int(row["run_id"]),
-                "internal_topic_reference": internal_topic_reference,
-                "public_topic_title": public_title,
+                "internal_topic_reference": _safe_topic_name(row),
+                "public_topic_title": _public_topic_title(
+                    representative_article,
+                    row["representative_title"],
+                ),
                 "size": int(row["size"]),
                 "representative_article": representative_article,
                 "evidence_articles": evidence_articles,
-                "tags": list(row["tags"] or []),
-                "language_code": row["language_code"],
-                "origin_type": row["origin_type"],
                 "quality_score": (
                     float(row["quality_score"])
                     if row["quality_score"] is not None
                     else None
                 ),
-                "is_oversized": bool(row["is_oversized"]),
-                "first_seen_at": _iso(row["first_seen_at"]),
-                "last_seen_at": _iso(row["last_seen_at"]),
             }
         )
 
-    return clusters
+    return result
 
 
 def _load_lineage_edges(
@@ -420,12 +481,9 @@ def _load_lineage_edges(
             "lineage_id": int(row["id"]),
             "parent_cluster_id": int(row["parent_cluster_id"]),
             "child_cluster_id": int(row["child_cluster_id"]),
-            "link_type": row["link_type"],
-            "centroid_similarity": float(row["centroid_similarity"]),
-            "article_overlap_ratio": float(row["article_overlap_ratio"]),
-            "article_overlap_count": int(row["article_overlap_count"]),
             "parent_size": int(row["parent_size"]),
             "child_size": int(row["child_size"]),
+            "article_overlap_count": int(row["article_overlap_count"]),
             "score": float(row["score"]),
         }
         for row in rows
@@ -446,19 +504,13 @@ def _coverage_change_percent(
     parent_size: int | None,
     child_size: int | None,
 ) -> float | None:
-    """
-    Calculate the change in number of monitored publications.
-
-    The percentage describes only volume in this news-monitoring dataset, not
-    the real-world scale or importance of the event.
-    """
     if parent_size is None or child_size is None or parent_size <= 0:
         return None
 
     return round(((child_size - parent_size) / parent_size) * 100, 1)
 
 
-def _public_momentum(
+def _coverage_momentum(
     *,
     trend: str,
     parent_size: int | None,
@@ -467,17 +519,11 @@ def _public_momentum(
 ) -> dict[str, Any]:
     return {
         "analysis_period_hours": analysis_period_hours,
-        "previous_publication_count": parent_size,
-        "current_publication_count": child_size,
         "coverage_change_percent": _coverage_change_percent(
             parent_size,
             child_size,
         ),
         "coverage_direction": trend,
-        "editorial_interpretation": (
-            "This measures change in the number of monitored publications, "
-            "not the real-world scale or importance of the event."
-        ),
     }
 
 
@@ -489,8 +535,8 @@ def _build_transitions(
     analysis_period_hours: int,
 ) -> list[dict[str, Any]]:
     parent_by_id = {
-        cluster["cluster_id"]: cluster
-        for cluster in parent_clusters
+        item["cluster_id"]: item
+        for item in parent_clusters
     }
 
     incoming_by_child: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -503,8 +549,7 @@ def _build_transitions(
     transitions: list[dict[str, Any]] = []
 
     for child in child_clusters:
-        child_id = child["cluster_id"]
-        incoming = incoming_by_child.get(child_id, [])
+        incoming = incoming_by_child.get(child["cluster_id"], [])
 
         if not incoming:
             transitions.append(
@@ -513,47 +558,45 @@ def _build_transitions(
                     "trend": "new",
                     "topic_reference": child["internal_topic_reference"],
                     "public_topic_title": child["public_topic_title"],
-                    "child_cluster_id": child_id,
-                    "evidence_articles": child["evidence_articles"],
                     "representative_article": child["representative_article"],
-                    "coverage_momentum": _public_momentum(
+                    "evidence_articles": child["evidence_articles"],
+                    "coverage_momentum": _coverage_momentum(
                         trend="new",
                         parent_size=None,
                         child_size=child["size"],
                         analysis_period_hours=analysis_period_hours,
                     ),
-                    "quality_score": child["quality_score"],
+                    "_current_size": child["size"],
+                    "_previous_size": 0,
+                    "_quality_score": child["quality_score"],
                 }
             )
             continue
 
-        primary_edge = max(
+        edge = max(
             incoming,
-            key=lambda edge: (
-                edge["score"],
-                edge["article_overlap_count"],
-                edge["parent_size"],
-                -edge["parent_cluster_id"],
+            key=lambda item: (
+                item["score"],
+                item["article_overlap_count"],
+                item["parent_size"],
+                -item["parent_cluster_id"],
             ),
         )
 
-        parent = parent_by_id.get(primary_edge["parent_cluster_id"])
+        parent = parent_by_id.get(edge["parent_cluster_id"])
 
         if parent is None:
-            raise ValueError(
-                "Lineage edge references a parent topic outside the selected "
-                f"parent run: parent_cluster_id={primary_edge['parent_cluster_id']}"
-            )
+            continue
 
-        name_changed = (
+        changed_name = (
             _normalize_topic_name(parent["internal_topic_reference"])
             != _normalize_topic_name(child["internal_topic_reference"])
         )
 
-        transition_type = "reframed" if name_changed else "continuation"
+        transition_type = "reframed" if changed_name else "continuation"
         trend = _trend_from_sizes(
-            primary_edge["parent_size"],
-            primary_edge["child_size"],
+            edge["parent_size"],
+            edge["child_size"],
         )
 
         transitions.append(
@@ -562,69 +605,21 @@ def _build_transitions(
                 "trend": trend,
                 "topic_reference": child["internal_topic_reference"],
                 "public_topic_title": child["public_topic_title"],
-                "parent_public_topic_title": parent["public_topic_title"],
-                "parent_cluster_id": parent["cluster_id"],
-                "child_cluster_id": child_id,
-                "evidence_articles": child["evidence_articles"],
                 "representative_article": child["representative_article"],
-                "coverage_momentum": _public_momentum(
+                "evidence_articles": child["evidence_articles"],
+                "coverage_momentum": _coverage_momentum(
                     trend=trend,
-                    parent_size=primary_edge["parent_size"],
-                    child_size=primary_edge["child_size"],
+                    parent_size=edge["parent_size"],
+                    child_size=edge["child_size"],
                     analysis_period_hours=analysis_period_hours,
                 ),
-                "quality_score": child["quality_score"],
+                "_current_size": edge["child_size"],
+                "_previous_size": edge["parent_size"],
+                "_quality_score": child["quality_score"],
             }
         )
 
-    for parent in parent_clusters:
-        parent_id = parent["cluster_id"]
-
-        if outgoing_by_parent.get(parent_id):
-            continue
-
-        transitions.append(
-            {
-                "transition_type": "disappeared",
-                "trend": "disappeared",
-                "topic_reference": parent["internal_topic_reference"],
-                "public_topic_title": parent["public_topic_title"],
-                "parent_cluster_id": parent_id,
-                "evidence_articles": parent["evidence_articles"],
-                "representative_article": parent["representative_article"],
-                "coverage_momentum": _public_momentum(
-                    trend="disappeared",
-                    parent_size=parent["size"],
-                    child_size=None,
-                    analysis_period_hours=analysis_period_hours,
-                ),
-                "quality_score": parent["quality_score"],
-            }
-        )
-
-    sort_priority = {
-        "new": 0,
-        "reframed": 1,
-        "continuation": 2,
-        "disappeared": 3,
-    }
-
-    return sorted(
-        transitions,
-        key=lambda item: (
-            sort_priority[item["transition_type"]],
-            -int(
-                item["coverage_momentum"].get(
-                    "current_publication_count"
-                )
-                or item["coverage_momentum"].get(
-                    "previous_publication_count"
-                )
-                or 0
-            ),
-            item["topic_reference"],
-        ),
-    )
+    return transitions
 
 
 def _select_editorial_topics(
@@ -632,33 +627,7 @@ def _select_editorial_topics(
     transitions: list[dict[str, Any]],
     max_topics: int,
 ) -> list[dict[str, Any]]:
-    """
-    Select coherent, source-attributed topics eligible for spoken narration.
-
-    A topic requires at least two evidence articles with non-empty source names.
-    Internal labels remain references only; narration should be built from
-    public_topic_title and evidence articles.
-    """
     max_topics = min(max_topics, DEFAULT_MAX_TOPICS)
-
-    def current_size(item: dict[str, Any]) -> int:
-        return int(
-            item["coverage_momentum"].get(
-                "current_publication_count"
-            )
-            or 0
-        )
-
-    def previous_size(item: dict[str, Any]) -> int:
-        return int(
-            item["coverage_momentum"].get(
-                "previous_publication_count"
-            )
-            or 0
-        )
-
-    def absolute_change(item: dict[str, Any]) -> int:
-        return abs(current_size(item) - previous_size(item))
 
     def evidence_count(item: dict[str, Any]) -> int:
         return len(item.get("evidence_articles") or [])
@@ -666,23 +635,14 @@ def _select_editorial_topics(
     def source_count(item: dict[str, Any]) -> int:
         return len(
             {
-                article["source_name"].casefold()
+                str(article.get("source_name", "")).casefold()
                 for article in item.get("evidence_articles") or []
                 if isinstance(article, dict)
-                and isinstance(article.get("source_name"), str)
-                and article["source_name"].strip()
+                and str(article.get("source_name", "")).strip()
             }
         )
 
-    def quality_score(item: dict[str, Any]) -> float:
-        return float(item.get("quality_score") or 0.0)
-
-    def eligible(item: dict[str, Any]) -> bool:
-        transition_type = item["transition_type"]
-
-        if transition_type == "disappeared":
-            return False
-
+    def is_eligible(item: dict[str, Any]) -> bool:
         if evidence_count(item) < MIN_EDITORIAL_EVIDENCE_ARTICLES:
             return False
 
@@ -692,17 +652,13 @@ def _select_editorial_topics(
         if not _normalize_whitespace(item.get("public_topic_title")):
             return False
 
-        size = current_size(item)
+        return int(item.get("_current_size", 0)) >= 8
 
-        if transition_type == "new":
-            return size >= 10
+    def rank(item: dict[str, Any]) -> tuple[int, int, int, float, str]:
+        current_size = int(item.get("_current_size", 0))
+        previous_size = int(item.get("_previous_size", 0))
+        change = abs(current_size - previous_size)
 
-        if transition_type == "reframed":
-            return size >= 12
-
-        return size >= 10 or absolute_change(item) >= 4
-
-    def score(item: dict[str, Any]) -> tuple[int, int, int, float, str]:
         type_bonus = {
             "continuation": 3,
             "new": 2,
@@ -711,207 +667,109 @@ def _select_editorial_topics(
 
         return (
             type_bonus,
-            current_size(item) + absolute_change(item),
+            current_size + change,
             source_count(item),
-            quality_score(item),
+            float(item.get("_quality_score") or 0.0),
             item["topic_reference"],
         )
 
-    eligible_topics = [
-        item
-        for item in transitions
-        if eligible(item)
-    ]
-
-    continuations = sorted(
-        [
-            item
-            for item in eligible_topics
-            if item["transition_type"] == "continuation"
-        ],
-        key=score,
-        reverse=True,
-    )
-
-    new_topics = sorted(
-        [
-            item
-            for item in eligible_topics
-            if item["transition_type"] == "new"
-        ],
-        key=score,
-        reverse=True,
-    )
-
-    reframed_topics = sorted(
-        [
-            item
-            for item in eligible_topics
-            if item["transition_type"] == "reframed"
-        ],
-        key=score,
-        reverse=True,
-    )
-
     selected: list[dict[str, Any]] = []
-    selected_references: set[str] = set()
+    used_references: set[str] = set()
 
-    def add(items: list[dict[str, Any]], limit: int) -> None:
-        added = 0
-
-        for item in items:
-            if len(selected) >= max_topics or added >= limit:
-                return
-
-            reference = item["topic_reference"]
-
-            if reference in selected_references:
-                continue
-
-            selected.append(item)
-            selected_references.add(reference)
-            added += 1
-
-    add(continuations, DEFAULT_MAX_CONTINUING_TOPICS)
-    add(new_topics, DEFAULT_MAX_NEW_TOPICS)
-    add(reframed_topics, DEFAULT_MAX_REFRAMED_TOPICS)
-
-    remaining = sorted(
-        eligible_topics,
-        key=score,
+    for item in sorted(
+        [item for item in transitions if is_eligible(item)],
+        key=rank,
         reverse=True,
-    )
-
-    for item in remaining:
+    ):
         if len(selected) >= max_topics:
             break
 
         reference = item["topic_reference"]
 
-        if reference in selected_references:
+        if reference in used_references:
             continue
 
-        selected.append(item)
-        selected_references.add(reference)
+        selected.append(
+            {
+                "topic_reference": reference,
+                "public_topic_title": item["public_topic_title"],
+                "transition_type": item["transition_type"],
+                "trend": item["trend"],
+                "coverage_momentum": item["coverage_momentum"],
+                "representative_article": item["representative_article"],
+                "evidence_articles": item["evidence_articles"],
+            }
+        )
+        used_references.add(reference)
 
     return selected
 
 
 def _build_agenda_summary(
     *,
-    previous_run: dict[str, Any],
     current_run: dict[str, Any],
-    transitions: list[dict[str, Any]],
     editorial_topics: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    Build concise audience-facing trend context.
-
-    Internal terms stay out of narration. Counts are retained for backend
-    grounding, but narration is instructed to report percentage changes.
-    """
-    relevant = [
-        item
-        for item in transitions
-        if item["transition_type"] != "disappeared"
-    ]
+    def change_value(item: dict[str, Any]) -> float:
+        value = item["coverage_momentum"].get("coverage_change_percent")
+        return float(value) if value is not None else 0.0
 
     growing = [
         item
-        for item in relevant
+        for item in editorial_topics
         if item["trend"] == "growing"
     ]
 
     declining = [
         item
-        for item in relevant
+        for item in editorial_topics
         if item["trend"] == "declining"
     ]
 
-    new_topics = [
+    newly_visible = [
         item
-        for item in relevant
+        for item in editorial_topics
         if item["transition_type"] == "new"
     ]
 
     reframed = [
         item
-        for item in relevant
+        for item in editorial_topics
         if item["transition_type"] == "reframed"
     ]
 
-    def sort_by_change(item: dict[str, Any]) -> tuple[float, int, str]:
-        momentum = item["coverage_momentum"]
-        percent = momentum.get("coverage_change_percent")
-
-        return (
-            abs(float(percent)) if percent is not None else -1.0,
-            int(momentum.get("current_publication_count") or 0),
-            item["topic_reference"],
-        )
+    def public_item(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "topic_reference": item["topic_reference"],
+            "public_topic_title": item["public_topic_title"],
+            "coverage_change_percent": item["coverage_momentum"].get(
+                "coverage_change_percent"
+            ),
+        }
 
     return {
         "analysis_period_hours": current_run["window_hours"],
-        "editorial_topic_references": [
-            item["topic_reference"]
-            for item in editorial_topics
-        ],
-        "editorial_topic_titles": [
-            item["public_topic_title"]
-            for item in editorial_topics
-        ],
         "top_growing_topics": [
-            {
-                "topic_reference": item["topic_reference"],
-                "public_topic_title": item["public_topic_title"],
-                "coverage_change_percent": item["coverage_momentum"].get(
-                    "coverage_change_percent"
-                ),
-            }
+            public_item(item)
             for item in sorted(
                 growing,
-                key=sort_by_change,
+                key=change_value,
                 reverse=True,
             )[:3]
         ],
         "top_declining_topics": [
-            {
-                "topic_reference": item["topic_reference"],
-                "public_topic_title": item["public_topic_title"],
-                "coverage_change_percent": item["coverage_momentum"].get(
-                    "coverage_change_percent"
-                ),
-            }
+            public_item(item)
             for item in sorted(
                 declining,
-                key=sort_by_change,
-                reverse=True,
+                key=change_value,
             )[:3]
         ],
         "notable_new_topics": [
-            {
-                "topic_reference": item["topic_reference"],
-                "public_topic_title": item["public_topic_title"],
-            }
-            for item in sorted(
-                new_topics,
-                key=lambda item: (
-                    int(
-                        item["coverage_momentum"].get(
-                            "current_publication_count"
-                        )
-                        or 0
-                    ),
-                    item["topic_reference"],
-                ),
-                reverse=True,
-            )[:3]
+            public_item(item)
+            for item in newly_visible[:3]
         ],
         "reframed_topics": [
-            {
-                "topic_reference": item["topic_reference"],
-                "public_topic_title": item["public_topic_title"],
-            }
+            public_item(item)
             for item in reframed[:3]
         ],
     }
@@ -924,12 +782,6 @@ def build_mistral_video_payload(
     max_topics: int = DEFAULT_MAX_TOPICS,
     headlines_per_topic: int = DEFAULT_EVIDENCE_ARTICLES_PER_TOPIC,
 ) -> dict[str, Any]:
-    """
-    Build source-aware editorial input for Mistral.
-
-    `headlines_per_topic` is retained as a compatibility parameter but now
-    controls the number of source-attributed evidence articles per topic.
-    """
     if target_duration_seconds < 30:
         raise ValueError("target_duration_seconds must be at least 30")
 
@@ -979,19 +831,18 @@ def build_mistral_video_payload(
             "analysis_context": {
                 "comparison_available": False,
                 "analysis_period_hours": child_run["window_hours"],
-                "child_run_id": child_run_id,
                 "reason": "No previous completed period is available.",
             },
             "previous_run": None,
-            "current_run": child_run,
+            "current_run": {
+                "period_ended_at": child_run["finished_at"],
+            },
             "agenda_summary": None,
             "editorial_topics": [],
             "constraints": constraints,
         }
 
     parent_run = _load_run(conn, parent_run_id)
-
-    analysis_period_hours = child_run["window_hours"]
 
     parent_clusters = _load_clusters_with_evidence(
         conn,
@@ -1015,7 +866,7 @@ def build_mistral_video_payload(
         parent_clusters=parent_clusters,
         child_clusters=child_clusters,
         lineage_edges=lineage_edges,
-        analysis_period_hours=analysis_period_hours,
+        analysis_period_hours=child_run["window_hours"],
     )
 
     editorial_topics = _select_editorial_topics(
@@ -1024,9 +875,7 @@ def build_mistral_video_payload(
     )
 
     agenda_summary = _build_agenda_summary(
-        previous_run=parent_run,
         current_run=child_run,
-        transitions=transitions,
         editorial_topics=editorial_topics,
     )
 
@@ -1038,19 +887,17 @@ def build_mistral_video_payload(
         "video_requirements": video_requirements,
         "analysis_context": {
             "comparison_available": True,
-            "analysis_period_hours": analysis_period_hours,
+            "analysis_period_hours": child_run["window_hours"],
             "comparison_description": (
                 "The current period is compared with the immediately "
-                "preceding completed period of the same monitoring workflow."
+                "preceding completed period."
             ),
         },
         "previous_run": {
             "period_ended_at": parent_run["finished_at"],
-            "article_count": parent_run["article_count"],
         },
         "current_run": {
             "period_ended_at": child_run["finished_at"],
-            "article_count": child_run["article_count"],
         },
         "agenda_summary": agenda_summary,
         "editorial_topics": editorial_topics,
