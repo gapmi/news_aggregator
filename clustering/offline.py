@@ -20,8 +20,8 @@ DEFAULT_LIMIT = 3000
 
 # Первичная кластеризация: формируем компактные тематические кластеры
 # сразу, без вторичных секторов и subclustering.
-DEFAULT_MIN_CLUSTER_SIZE = 8
-DEFAULT_MIN_SAMPLES = 1
+DEFAULT_MIN_CLUSTER_SIZE = 10
+DEFAULT_MIN_SAMPLES = 3
 DEFAULT_CLUSTER_SELECTION_METHOD = "leaf"
 DEFAULT_CLUSTER_SELECTION_EPSILON = 0.0
 
