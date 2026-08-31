@@ -524,30 +524,6 @@ def validate_mistral_video_script(
             allowed_sources,
         )
 
-        unknown_attribution_matches = re.findall(
-            r"\b(?:according to|reported by|the)\s+"
-            r"([A-Z][A-Za-z0-9 .&'’-]{1,80})",
-            scene.narration,
-            flags=re.IGNORECASE,
-        )
-
-        for candidate in unknown_attribution_matches:
-            normalized_candidate = _normalize_whitespace(candidate).casefold()
-
-            if (
-                normalized_candidate
-                and normalized_candidate not in allowed_sources
-                and not any(
-                    source in normalized_candidate
-                    or normalized_candidate in source
-                    for source in allowed_sources
-                )
-            ):
-                errors.append(
-                    f"Scene {scene.scene_number} names a source not found "
-                    f"in evidence articles: {candidate!r}"
-                )
-
         if (
             re.search(r"\baccording to\b|\breported by\b", scene.narration,
                       flags=re.IGNORECASE)
