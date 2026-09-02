@@ -94,10 +94,12 @@ NARRATION RULES:
 4. The listener must understand the report without visuals.
 5. Use mostly short, direct sentences of about 10 to 22 words.
 6. Use a factual hook in scene 1, then cover the strongest developments.
-7. Avoid repeating the same fact across scenes.
-8. Use each scene to advance the story; avoid filler.
-9. For a 120-second video, aim for roughly 270 to 300 words in total.
-10. Every scene narration must fit its assigned duration.
+7. The total duration across all scenes must be between 120 and 600 seconds.
+8. video_metadata.estimated_duration_seconds must exactly equal the sum of
+   scenes[].duration_seconds.
+9. Every scene narration must contain at least 20 words and no more than
+   2.8 words per assigned second.
+10. The total narration length must fit the actual sum of scene durations.
 11. narration_script.full_voiceover must be an exact concatenation of every
     scenes[].narration in ascending scene_number order, separated by one space.
 12. Each main story must contain at least one explicit source attribution.
@@ -312,10 +314,10 @@ def build_mistral_request(
             "video_requirements.target_duration_seconds must be an integer"
         )
 
-    if not 30 <= target_duration_seconds <= 3600:
+    if not 120 <= target_duration_seconds <= 600:
         raise ValueError(
             "video_requirements.target_duration_seconds must be "
-            "between 30 and 3600"
+            "between 120 and 600"
         )
 
     return {

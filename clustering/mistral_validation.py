@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 MIN_SCENE_DURATION_SECONDS = 8
 MAX_SCENE_DURATION_SECONDS = 20
+MIN_VIDEO_DURATION_SECONDS = 120
+MAX_VIDEO_DURATION_SECONDS = 600
+
+MIN_SCENE_WORDS = 20
 
 MIN_WORDS_PER_SECOND = 2.1
 MAX_WORDS_PER_SECOND = 2.8
@@ -236,7 +240,7 @@ def _find_pattern_matches(
 
 def _scene_word_bounds(duration_seconds: int) -> tuple[int, int]:
     return (
-        round(duration_seconds * MIN_WORDS_PER_SECOND),
+        MIN_SCENE_WORDS,
         round(duration_seconds * MAX_WORDS_PER_SECOND),
     )
 
@@ -277,6 +281,41 @@ def _allowed_topic_references(
     return references
 
 
+def _normalize_source_text(value: str) -> str:
+    value = value.casefold()
+    value = re.sub(r"[^a-z0-9а-яё]+", " ", value)
+    return " ".join(value.split())
+
+
+def _source_aliases(source_name: str) -> set[str]:
+    normalized = _normalize_source_text(source_name)
+
+    aliases = {normalized}
+
+    if normalized.startswith("google news "):
+        aliases.add("google news")
+
+    if " " in normalized:
+        aliases.add(normalized.split()[0])
+
+    if "." in source_name:
+        domain = source_name.casefold().split("/")[0]
+        aliases.add(_normalize_source_text(domain))
+
+        hostname = domain.removeprefix("www.")
+        aliases.add(_normalize_source_text(hostname))
+
+        labels = hostname.split(".")
+        if labels:
+            aliases.add(_normalize_source_text(labels[0]))
+
+    return {
+        alias
+        for alias in aliases
+        if len(alias) >= 3
+    }
+
+
 def _allowed_source_names(
     input_payload: dict[str, Any],
 ) -> set[str]:
@@ -291,17 +330,20 @@ def _allowed_source_names(
         if not isinstance(topic, dict):
             continue
 
-        for article in topic.get("evidence_articles") or []:
-            if not isinstance(article, dict):
-                continue
+    for article in topic.get("evidence_articles") or []:
+        if not isinstance(article, dict):
+            continue
 
-            source_name = article.get("source_name")
+        candidates = [
+            article.get("source_name"),
+            *(article.get("source_aliases") or []),
+        ]
 
-            if isinstance(source_name, str) and source_name.strip():
-                sources.add(source_name.casefold())
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                sources.update(_source_aliases(candidate))
 
     return sources
-
 
 def _expected_target_duration(input_payload: dict[str, Any]) -> int:
     requirements = input_payload.get("video_requirements")
@@ -319,10 +361,11 @@ def _expected_target_duration(input_payload: dict[str, Any]) -> int:
             "must be an integer"
         )
 
-    if not 30 <= duration <= 3600:
+    if not MIN_VIDEO_DURATION_SECONDS <= duration <= MAX_VIDEO_DURATION_SECONDS:
         raise ValueError(
             "input_payload.video_requirements.target_duration_seconds "
-            "must be between 30 and 3600"
+            f"must be between {MIN_VIDEO_DURATION_SECONDS} and "
+            f"{MAX_VIDEO_DURATION_SECONDS}"
         )
 
     return duration
@@ -332,12 +375,12 @@ def _source_names_mentioned(
     narration: str,
     allowed_sources: set[str],
 ) -> set[str]:
-    low_narration = narration.casefold()
+    normalized_narration = _normalize_source_text(narration)
 
     return {
         source
         for source in allowed_sources
-        if source in low_narration
+        if source in normalized_narration
     }
 
 
@@ -398,19 +441,29 @@ def validate_mistral_video_script(
 
     duration_sum = sum(scene.duration_seconds for scene in scenes)
 
-    if duration_sum != target_duration_seconds:
+    if not MIN_VIDEO_DURATION_SECONDS <= duration_sum <= MAX_VIDEO_DURATION_SECONDS:
         errors.append(
-            "Scene duration sum must equal target duration: "
-            f"expected={target_duration_seconds}, actual={duration_sum}"
+            "Scene duration sum must be within the allowed video duration range: "
+            f"expected_between={MIN_VIDEO_DURATION_SECONDS}.."
+            f"{MAX_VIDEO_DURATION_SECONDS}, actual={duration_sum}"
         )
 
-    if (
-        script.video_metadata.estimated_duration_seconds
-        != target_duration_seconds
+    if not (
+        MIN_VIDEO_DURATION_SECONDS
+        <= script.video_metadata.estimated_duration_seconds
+        <= MAX_VIDEO_DURATION_SECONDS
     ):
         errors.append(
-            "video_metadata.estimated_duration_seconds must equal target "
-            f"duration: expected={target_duration_seconds}, "
+            "video_metadata.estimated_duration_seconds must be within the "
+            f"allowed video duration range: expected_between="
+            f"{MIN_VIDEO_DURATION_SECONDS}..{MAX_VIDEO_DURATION_SECONDS}, "
+            f"actual={script.video_metadata.estimated_duration_seconds}"
+        )
+
+    if script.video_metadata.estimated_duration_seconds != duration_sum:
+        errors.append(
+            "video_metadata.estimated_duration_seconds must equal the sum of "
+            f"scene durations: expected={duration_sum}, "
             f"actual={script.video_metadata.estimated_duration_seconds}"
         )
 
@@ -430,11 +483,12 @@ def validate_mistral_video_script(
     voiceover_word_count = _word_count(
         script.narration_script.full_voiceover
     )
-    min_voiceover_words = round(
-        target_duration_seconds * MIN_WORDS_PER_SECOND
+    min_voiceover_words = max(
+        len(scenes) * MIN_SCENE_WORDS,
+        round(duration_sum * MIN_WORDS_PER_SECOND),
     )
     max_voiceover_words = round(
-        target_duration_seconds * MAX_WORDS_PER_SECOND
+        duration_sum * MAX_WORDS_PER_SECOND
     )
 
     if voiceover_word_count < min_voiceover_words:
@@ -606,7 +660,12 @@ def parse_and_validate_mistral_video_script(
     raw_content: str,
     input_payload: dict[str, Any],
 ) -> MistralVideoScript:
-    """Parse raw Mistral JSON and apply the full production validation."""
+    """Parse Mistral JSON and apply production validation."""
     script = parse_mistral_video_script(raw_content)
+
+    script.narration_script.full_voiceover = _normalize_whitespace(
+        " ".join(scene.narration for scene in script.scenes)
+    )
+
     validate_mistral_video_script(script, input_payload)
     return script
