@@ -6,21 +6,23 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+
 MIN_SCENE_DURATION_SECONDS = 8
 MAX_SCENE_DURATION_SECONDS = 20
+
 MIN_VIDEO_DURATION_SECONDS = 120
 MAX_VIDEO_DURATION_SECONDS = 600
 
 MIN_SCENE_WORDS = 20
-
-MIN_WORDS_PER_SECOND = 2.1
 MAX_WORDS_PER_SECOND = 2.8
+
 
 REQUIRED_VISUAL_PROMPT_SUFFIX = (
     "cinematic editorial news documentary, restrained colors, "
     "natural lighting, realistic camera movement, clean composition, "
     "16:9, no text, no logos, no watermark"
 )
+
 
 ALLOWED_VISUAL_TYPES = {
     "editorial_b_roll",
@@ -29,6 +31,7 @@ ALLOWED_VISUAL_TYPES = {
     "generic_newsroom",
     "thematic_ai_video",
 }
+
 
 FORBIDDEN_VISUAL_PROMPT_PATTERNS = {
     "readable text": r"(?<!no\s)\breadable\s+text\b",
@@ -41,7 +44,8 @@ FORBIDDEN_VISUAL_PROMPT_PATTERNS = {
     "label": r"(?<!un)\blabel(?:ed|led|ing|s)?\b",
     "chart": r"\bcharts?\b",
     "graph": r"\bgraphs?\b",
-    "table": r"\btables?\b",
+    "data table": r"\bdata\s+tables?\b",
+    "tabular layout": r"\btabular\s+(?:layout|display|format)\b",
     "infographic": r"\binfographics?\b",
     "dashboard": r"\bdashboards?\b",
     "data visualization": r"\bdata\s+visuali[sz]ation\b",
@@ -59,6 +63,7 @@ FORBIDDEN_VISUAL_PROMPT_PATTERNS = {
     "newspaper": r"\bnewspapers?\b",
 }
 
+
 FORBIDDEN_FAKE_DOCUMENTARY_PATTERNS = {
     "rescue team": r"\brescue\s+teams?\b",
     "search and rescue": r"\bsearch\s+and\s+rescue\b",
@@ -74,7 +79,7 @@ FORBIDDEN_FAKE_DOCUMENTARY_PATTERNS = {
     "flooded area": r"\bflood(?:ed)?\s+areas?\b",
     "flood affected": r"\bflood[-\s]?affected\b",
     "wildfire scene": r"\bwildfire\s+scene\b",
-    "firefighters": r"\bfirefighters?\b",
+    "firefighter": r"\bfirefighters?\b",
     "destroyed building": r"\bdestroyed\s+buildings?\b",
     "injured person": r"\binjured\s+(?:people|person|civilians?)\b",
     "dead body": r"\bdead\s+bodies\b",
@@ -87,6 +92,7 @@ FORBIDDEN_FAKE_DOCUMENTARY_PATTERNS = {
     "identifiable official": r"\bidentifiable\s+officials?\b",
     "intelligence official": r"\bintelligence\s+officials?\b",
 }
+
 
 FORBIDDEN_NARRATION_TERMS = {
     "run": r"\bruns?\b",
@@ -113,6 +119,7 @@ FORBIDDEN_NARRATION_TERMS = {
     "child size": r"\bchild[_\s-]?size\b",
 }
 
+
 FORBIDDEN_FIRST_PERSON_PATTERNS = {
     "I": r"\bI\b",
     "we": r"\bwe\b",
@@ -128,7 +135,10 @@ class VideoMetadata(BaseModel):
     language: Literal["en"]
     title: str = Field(min_length=5, max_length=160)
     description: str = Field(min_length=20, max_length=2000)
-    estimated_duration_seconds: int = Field(ge=30, le=3600)
+    estimated_duration_seconds: int = Field(
+        ge=MIN_VIDEO_DURATION_SECONDS,
+        le=MAX_VIDEO_DURATION_SECONDS,
+    )
     editorial_angle: str = Field(min_length=10, max_length=500)
 
 
@@ -206,12 +216,12 @@ def _find_pattern_matches(
     patterns: dict[str, str],
 ) -> list[str]:
     """
-    Find forbidden terms while allowing the required negative safety suffix.
+    Find forbidden terms while allowing negative safety instructions.
 
-    The suffix includes "no text", "no logos", and "no watermark"; these are
-    protective instructions, not a request to render the named elements.
+    The required suffix includes "no text", "no logos", and "no watermark".
+    Those phrases do not request rendering the corresponding elements.
     """
-    normalized = _normalize_whitespace(value).lower()
+    normalized = _normalize_whitespace(value).casefold()
 
     negative_forms = [
         r"\bno\s+(?:readable\s+)?text\b",
@@ -288,26 +298,37 @@ def _normalize_source_text(value: str) -> str:
 
 
 def _source_aliases(source_name: str) -> set[str]:
+    """
+    Build safe aliases for exact and domain-style source names.
+
+    One-token aliases are intentionally not created for ordinary multi-word
+    publisher names, because aliases such as "the", "middle", or "news" would
+    create false-positive attribution matches.
+    """
     normalized = _normalize_source_text(source_name)
+
+    if not normalized:
+        return set()
 
     aliases = {normalized}
 
     if normalized.startswith("google news "):
         aliases.add("google news")
 
-    if " " in normalized:
-        aliases.add(normalized.split()[0])
+    raw_source = source_name.strip().casefold()
 
-    if "." in source_name:
-        domain = source_name.casefold().split("/")[0]
-        aliases.add(_normalize_source_text(domain))
+    if "." in raw_source and " " not in raw_source:
+        hostname = raw_source.split("/", 1)[0].removeprefix("www.")
+        normalized_hostname = _normalize_source_text(hostname)
 
-        hostname = domain.removeprefix("www.")
-        aliases.add(_normalize_source_text(hostname))
+        if normalized_hostname:
+            aliases.add(normalized_hostname)
 
-        labels = hostname.split(".")
-        if labels:
-            aliases.add(_normalize_source_text(labels[0]))
+        first_label = hostname.split(".", 1)[0]
+        normalized_first_label = _normalize_source_text(first_label)
+
+        if len(normalized_first_label) >= 3:
+            aliases.add(normalized_first_label)
 
     return {
         alias
@@ -330,20 +351,31 @@ def _allowed_source_names(
         if not isinstance(topic, dict):
             continue
 
-    for article in topic.get("evidence_articles") or []:
-        if not isinstance(article, dict):
+        evidence_articles = topic.get("evidence_articles") or []
+
+        if not isinstance(evidence_articles, list):
             continue
 
-        candidates = [
-            article.get("source_name"),
-            *(article.get("source_aliases") or []),
-        ]
+        for article in evidence_articles:
+            if not isinstance(article, dict):
+                continue
 
-        for candidate in candidates:
-            if isinstance(candidate, str) and candidate.strip():
-                sources.update(_source_aliases(candidate))
+            raw_aliases = article.get("source_aliases") or []
+
+            if not isinstance(raw_aliases, list):
+                raw_aliases = []
+
+            candidates = [
+                article.get("source_name"),
+                *raw_aliases,
+            ]
+
+            for candidate in candidates:
+                if isinstance(candidate, str) and candidate.strip():
+                    sources.update(_source_aliases(candidate))
 
     return sources
+
 
 def _expected_target_duration(input_payload: dict[str, Any]) -> int:
     requirements = input_payload.get("video_requirements")
@@ -384,6 +416,57 @@ def _source_names_mentioned(
     }
 
 
+def _sanitize_scene_items(
+    parsed: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Drop primitive values accidentally included in scenes[].
+
+    Only non-dict entries are removed. Dict entries remain untouched and are
+    still fully checked by Pydantic and production validation.
+    """
+    scenes = parsed.get("scenes")
+
+    if not isinstance(scenes, list):
+        return parsed
+
+    if all(isinstance(item, dict) for item in scenes):
+        return parsed
+
+    sanitized = dict(parsed)
+    sanitized["scenes"] = [
+        item
+        for item in scenes
+        if isinstance(item, dict)
+    ]
+
+    return sanitized
+
+
+def _normalize_derived_fields(
+    script: MistralVideoScript,
+) -> None:
+    """
+    Normalize fields derived entirely from scene data.
+
+    Scenes are the source of truth. This prevents an independently generated
+    full_voiceover or metadata duration from contradicting the scene plan.
+    """
+    ordered_scenes = sorted(
+        script.scenes,
+        key=lambda scene: scene.scene_number,
+    )
+
+    script.narration_script.full_voiceover = _normalize_whitespace(
+        " ".join(scene.narration for scene in ordered_scenes)
+    )
+
+    script.video_metadata.estimated_duration_seconds = sum(
+        scene.duration_seconds
+        for scene in ordered_scenes
+    )
+
+
 def parse_mistral_video_script(raw_content: str) -> MistralVideoScript:
     """Parse JSON and validate the Pydantic object shape."""
     try:
@@ -397,6 +480,8 @@ def parse_mistral_video_script(raw_content: str) -> MistralVideoScript:
         raise MistralVideoValidationError(
             ["Response root must be a JSON object"]
         )
+
+    parsed = _sanitize_scene_items(parsed)
 
     try:
         return MistralVideoScript.model_validate(parsed)
@@ -417,15 +502,15 @@ def validate_mistral_video_script(
     input_payload: dict[str, Any],
 ) -> None:
     """
-    Validate timing, source grounding, internal-language and visual invariants.
+    Validate timing, source grounding, public-language and visual invariants.
 
-    It does not attempt to fact-check natural-language claims against article
-    bodies because the current database stores article titles, not full text.
-    It ensures that named sources were supplied in evidence articles.
+    The system checks that source names named in narration were present in
+    evidence articles, but cannot fact-check prose against full article bodies.
     """
     errors: list[str] = []
 
-    target_duration_seconds = _expected_target_duration(input_payload)
+    _expected_target_duration(input_payload)
+
     allowed_references = _allowed_topic_references(input_payload)
     allowed_sources = _allowed_source_names(input_payload)
 
@@ -443,8 +528,8 @@ def validate_mistral_video_script(
 
     if not MIN_VIDEO_DURATION_SECONDS <= duration_sum <= MAX_VIDEO_DURATION_SECONDS:
         errors.append(
-            "Scene duration sum must be within the allowed video duration range: "
-            f"expected_between={MIN_VIDEO_DURATION_SECONDS}.."
+            "Scene duration sum must be within the allowed video duration "
+            f"range: expected_between={MIN_VIDEO_DURATION_SECONDS}.."
             f"{MAX_VIDEO_DURATION_SECONDS}, actual={duration_sum}"
         )
 
@@ -483,24 +568,21 @@ def validate_mistral_video_script(
     voiceover_word_count = _word_count(
         script.narration_script.full_voiceover
     )
-    min_voiceover_words = max(
-        len(scenes) * MIN_SCENE_WORDS,
-        round(duration_sum * MIN_WORDS_PER_SECOND),
-    )
+    min_voiceover_words = len(scenes) * MIN_SCENE_WORDS
     max_voiceover_words = round(
         duration_sum * MAX_WORDS_PER_SECOND
     )
 
     if voiceover_word_count < min_voiceover_words:
         errors.append(
-            "full_voiceover is too short for the target duration: "
+            "full_voiceover is too short for the number of scenes: "
             f"expected_at_least={min_voiceover_words} words, "
             f"actual={voiceover_word_count}"
         )
 
     if voiceover_word_count > max_voiceover_words:
         errors.append(
-            "full_voiceover is too long for the target duration: "
+            "full_voiceover is too long for the total scene duration: "
             f"expected_at_most={max_voiceover_words} words, "
             f"actual={voiceover_word_count}"
         )
@@ -578,11 +660,13 @@ def validate_mistral_video_script(
             allowed_sources,
         )
 
-        if (
-            re.search(r"\baccording to\b|\breported by\b", scene.narration,
-                      flags=re.IGNORECASE)
-            and not mentioned_sources
-        ):
+        has_explicit_attribution = re.search(
+            r"\baccording\s+to\b|\breported\s+by\b|\bsaid\b|\bconfirmed\b",
+            scene.narration,
+            flags=re.IGNORECASE,
+        )
+
+        if has_explicit_attribution and not mentioned_sources:
             errors.append(
                 f"Scene {scene.scene_number} uses source attribution but "
                 "does not mention a source supplied in evidence articles"
@@ -607,7 +691,7 @@ def validate_mistral_video_script(
         if fake_documentary_matches:
             errors.append(
                 f"Scene {scene.scene_number} visual_prompt requests unsafe "
-                f"fake-documentary content: "
+                "fake-documentary content: "
                 f"{', '.join(fake_documentary_matches)}"
             )
 
@@ -623,6 +707,14 @@ def validate_mistral_video_script(
                 f"Scene {scene.scene_number} visual_prompt must end with the "
                 "required safe editorial style suffix"
             )
+
+    missing_topic_references = allowed_references - all_scene_references
+
+    if missing_topic_references:
+        errors.append(
+            "Every editorial topic must be referenced by at least one scene: "
+            f"missing={sorted(missing_topic_references)}"
+        )
 
     summary_lists = {
         "continuing_topics": script.coverage_summary.continuing_topics,
@@ -660,12 +752,11 @@ def parse_and_validate_mistral_video_script(
     raw_content: str,
     input_payload: dict[str, Any],
 ) -> MistralVideoScript:
-    """Parse Mistral JSON and apply production validation."""
+    """Parse, normalize derived fields, and apply production validation."""
     script = parse_mistral_video_script(raw_content)
 
-    script.narration_script.full_voiceover = _normalize_whitespace(
-        " ".join(scene.narration for scene in script.scenes)
-    )
+    _normalize_derived_fields(script)
 
     validate_mistral_video_script(script, input_payload)
+
     return script
