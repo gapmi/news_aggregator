@@ -14,6 +14,8 @@ from scrapers.base import Article
 
 logger = logging.getLogger("news.collector")
 
+INGEST_EMBEDDING_BATCH_SIZE = 1
+
 
 class PGStorage:
     def __init__(self):
@@ -28,6 +30,7 @@ class PGStorage:
                     dbname=os.getenv("DB_NAME", "news_db"),
                     user=os.getenv("DB_USER", "postgres"),
                     password=os.getenv("DB_PASSWORD", "qg9PlWWpeffd"),
+                    connect_timeout=15,
                 )
                 register_vector(self.conn)
             except Exception as e:
@@ -68,10 +71,10 @@ class PGStorage:
         except Exception:
             pass
 
-        cleaned2 = re.sub(r"^[^\d]{1,20},\s*", "", cleaned).strip()
+        cleaned = re.sub(r"^[^\d]{1,20},\s*", "", cleaned).strip()
 
         try:
-            dt = date_parser.parse(cleaned2, fuzzy=True)
+            dt = date_parser.parse(cleaned, fuzzy=True)
             if dt.tzinfo is not None:
                 dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
             return dt
@@ -79,135 +82,98 @@ class PGStorage:
             return None
 
     def save(self, articles: list[Article]):
+        if not articles:
+            logger.warning("storage.save: no articles")
+            return
+
         saved_rows = []
 
-        with self.conn.cursor() as cur:
-            for article in articles:
-                published = self._normalize_published(article.published)
-
-                if article.published and published is None:
-                    logger.warning(
-                        "failed to parse published=%r source=%r url=%r",
-                        article.published,
-                        article.source,
-                        article.url,
-                    )
-
-                cur.execute(
-                    """
-                    INSERT INTO articles (
-                        title,
-                        url,
-                        published,
-                        source,
-                        rss_description
-                    )
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (url) DO UPDATE
-                    SET
-                        title = EXCLUDED.title,
-                        published = EXCLUDED.published,
-                        source = EXCLUDED.source,
-                        rss_description = EXCLUDED.rss_description
-                    RETURNING id, title, rss_description
-                    """,
-                    (
-                        article.title,
-                        article.url,
-                        published,
-                        article.source,
-                        article.description,
-                    ),
-                )
-
-                row = cur.fetchone()
-                saved_rows.append(
-                    {
-                        "id": row[0],
-                        "title": row[1],
-                        "description": row[2],
-                    }
-                )
-
-        self.conn.commit()
-
-        payload = [
-            {
-                "id": row["id"],
-                "title": row["title"],
-                "description": row["description"],
-            }
-            for row in saved_rows
-            if row["title"] or row["description"]
-        ]
-
-        logger.warning("storage.save prepared rows: %s", len(saved_rows))
-
-        if not payload:
-            logger.warning("storage.save finished with empty payload")
-            return
-
-        logger.warning("embedding step: start, payload_size=%s", len(payload))
-
         try:
+            with self.conn.cursor() as cur:
+                for article in articles:
+                    published = self._normalize_published(article.published)
+
+                    if article.published and published is None:
+                        logger.warning(
+                            "failed to parse published=%r source=%r url=%r",
+                            article.published,
+                            article.source,
+                            article.url,
+                        )
+
+                    cur.execute(
+                        """
+                        INSERT INTO articles (
+                            title,
+                            url,
+                            published,
+                            source,
+                            rss_description
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (url) DO UPDATE
+                        SET
+                            title = EXCLUDED.title,
+                            published = EXCLUDED.published,
+                            source = EXCLUDED.source,
+                            rss_description = EXCLUDED.rss_description
+                        RETURNING id, title, rss_description
+                        """,
+                        (
+                            article.title,
+                            article.url,
+                            published,
+                            article.source,
+                            article.description,
+                        ),
+                    )
+
+                    row = cur.fetchone()
+                    saved_rows.append(
+                        {
+                            "id": row[0],
+                            "title": row[1],
+                            "description": row[2],
+                        }
+                    )
+
+            logger.warning("storage.save prepared rows: %s", len(saved_rows))
+
             from processors.embeddings import ArticleText
 
-            logger.warning("embedding step: ArticleText imported")
-        except Exception:
-            logger.exception("embedding step failed: ArticleText import")
-            return
-
-        try:
-            embedding_service = self._get_embedding_service()
-            logger.warning(
-                "embedding step: service initialized: %s",
-                type(embedding_service).__name__,
-            )
-        except Exception:
-            logger.exception("embedding step failed: service init")
-            return
-
-        try:
             article_payload = [
                 ArticleText(
                     id=row["id"],
                     title=row["title"],
                     description=row["description"],
                 )
-                for row in payload
+                for row in saved_rows
+                if row["title"] or row["description"]
             ]
 
-            logger.warning(
-                "embedding step: payload prepared, article_payload_size=%s, sample_id=%s",
-                len(article_payload),
-                article_payload[0].id if article_payload else None,
-            )
-        except Exception:
-            logger.exception("embedding step failed: payload preparation")
-            return
+            if not article_payload:
+                self.conn.commit()
+                logger.warning("storage.save: no usable text, saved without embeddings")
+                return
 
-        try:
+            embedding_service = self._get_embedding_service()
+
             texts = [
                 embedding_service.build_text(article)
                 for article in article_payload
             ]
 
+            logger.warning(
+                "embedding step: start, payload_size=%s, batch_size=%s",
+                len(article_payload),
+                INGEST_EMBEDDING_BATCH_SIZE,
+            )
+
             vectors = embedding_service.encode_batch(
                 article_payload,
-                batch_size=8,
+                batch_size=INGEST_EMBEDDING_BATCH_SIZE,
             )
 
-            logger.warning(
-                "embedding step: encode ok, vectors_count=%s, first_vector_len=%s",
-                len(vectors) if vectors is not None else None,
-                len(vectors[0]) if vectors and vectors[0] is not None else None,
-            )
-        except Exception:
-            logger.exception("embedding encode failed")
-            self.conn.rollback()
-            return
-
-        try:
             if len(vectors) != len(article_payload):
                 raise ValueError(
                     "vectors/article mismatch: "
@@ -224,34 +190,12 @@ class PGStorage:
                 if vector is not None
             ]
 
-            logger.warning(
-                "embedding step: update_rows prepared, count=%s, sample_vector_len=%s",
-                len(update_rows),
-                len(update_rows[0][1])
-                if update_rows and update_rows[0][1] is not None
-                else None,
-            )
-        except Exception as e:
-            import traceback
+            if len(update_rows) != len(article_payload):
+                raise ValueError(
+                    "some embeddings are missing: "
+                    f"updated={len(update_rows)}, expected={len(article_payload)}"
+                )
 
-            logger.exception("embedding generation skipped due to error")
-
-            try:
-                from api import run_logs
-
-                run_logs.append(f"ERROR in embeddings: {e}")
-                run_logs.extend(traceback.format_exc().splitlines()[-40:])
-            except Exception:
-                pass
-
-            self.conn.rollback()
-            return
-
-        if not update_rows:
-            logger.warning("embedding step: no update_rows, skip DB update")
-            return
-
-        try:
             with self.conn.cursor() as cur:
                 execute_batch(
                     cur,
@@ -263,22 +207,33 @@ class PGStorage:
                     WHERE id = %s
                     """,
                     update_rows,
-                    page_size=50,
+                    page_size=25,
                 )
 
-            logger.warning("embedding step: execute_batch done")
-        except Exception:
-            logger.exception("embedding db update failed")
-            self.conn.rollback()
-            return
-
-        try:
             self.conn.commit()
-            logger.warning("embeddings updated: %s", len(update_rows))
-        except Exception:
-            logger.exception("embedding commit failed")
-            self.conn.rollback()
-            return
+
+            logger.warning(
+                "storage.save committed: articles=%s embeddings=%s",
+                len(saved_rows),
+                len(update_rows),
+            )
+
+        except Exception as e:
+            logger.exception("storage.save failed; transaction rolled back")
+
+            try:
+                self.conn.rollback()
+            except Exception:
+                logger.exception("storage.save rollback failed")
+
+            try:
+                from api import run_logs
+
+                run_logs.append(f"ERROR in storage.save: {e}")
+            except Exception:
+                pass
+
+            raise
 
     def save_scales_for_articles(
         self,
