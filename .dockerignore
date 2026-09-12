@@ -6,7 +6,7 @@
 .vscode/
 .idea/
 
-# Python bytecode, test and tool caches
+# Python bytecode, tests and tool caches
 __pycache__/
 **/__pycache__/
 *.py[cod]
@@ -19,7 +19,7 @@ htmlcov/
 .tox/
 .nox/
 
-# Local Python environments and package caches
+# Local Python environments, secrets and caches
 .venv/
 venv/
 env/
@@ -39,7 +39,7 @@ storage/
 *.log.*
 *.pid
 
-# TLS / Certbot state — must stay on host bind mounts, never in app image
+# TLS / Certbot state: mounted from the host; never bake it into the app image
 certbot/conf/
 certbot/www/
 
@@ -50,7 +50,7 @@ dist/
 build/
 coverage/
 
-# OS / temporary files
+# OS and editor temporary files
 .DS_Store
 Thumbs.db
 *.swp
@@ -58,4 +58,3 @@ Thumbs.db
 *~
 tmp/
 temp/
-EOF
