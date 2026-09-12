@@ -1,0 +1,61 @@
+# Version control and editor metadata
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+
+# Python bytecode, test and tool caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.pytype/
+.tox/
+.nox/
+
+# Local Python environments and package caches
+.venv/
+venv/
+env/
+.env/
+.env.*
+!.env.example
+.cache/
+pip-cache/
+
+# Runtime data, backups and logs
+backups/
+db_backups/
+storage/
+*.dump
+*.sql
+*.log
+*.log.*
+*.pid
+
+# TLS / Certbot state — must stay on host bind mounts, never in app image
+certbot/conf/
+certbot/www/
+
+# Node and frontend artifacts
+node_modules/
+**/node_modules/
+dist/
+build/
+coverage/
+
+# OS / temporary files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+tmp/
+temp/
+EOF
