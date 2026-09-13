@@ -32,7 +32,6 @@ pip-cache/
 # Runtime data, backups and logs
 backups/
 db_backups/
-storage/
 *.dump
 *.sql
 *.log
