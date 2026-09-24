@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir --default-timeout=120 \
  && pip install --no-cache-dir --default-timeout=120 \
       -r requirements.txt
 
+RUN python -m playwright install --with-deps chromium
+
 COPY . .
 
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
