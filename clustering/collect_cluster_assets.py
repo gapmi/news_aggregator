@@ -60,7 +60,8 @@ async def screenshot_page(url: str, out_path: Path) -> dict:
         browser = await p.chromium.launch()
         page = await browser.new_page()
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
             await page.screenshot(path=str(out_path), full_page=True)
             return {"status": "ok"}
         except Exception as e:
