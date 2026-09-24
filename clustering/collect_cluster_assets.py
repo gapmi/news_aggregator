@@ -123,12 +123,23 @@ async def main():
                 "asset_type": asset_type,
                 "asset_path": asset_path,
                 "status": status,
+                "error": res.get("error", ""),
             })
 
     # Лог
     log_file = OUTPUT_DIR / "log.csv"
     with log_file.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["cluster_id", "article_url", "asset_type", "asset_path", "status"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "cluster_id",
+                "article_url",
+                "asset_type",
+                "asset_path",
+                "status",
+                "error",
+            ],
+        )
         writer.writeheader()
         writer.writerows(log_rows)
 
