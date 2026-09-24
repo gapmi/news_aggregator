@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import os
 import re
 import sys
 from collections.abc import Iterable
@@ -17,7 +18,7 @@ from playwright.async_api import Browser, Page, async_playwright
 
 
 INPUT_CSV = Path("cluster_centroids.csv")
-OUTPUT_DIR = Path("test_assets")
+OUTPUT_DIR = Path(os.environ.get("ASSETS_OUTPUT_DIR", "test_assets"))
 LOG_PATH = OUTPUT_DIR / "log.csv"
 
 HTTP_TIMEOUT_SECONDS = 30.0
@@ -54,7 +55,17 @@ def clean_url(value: str | None, base_url: str | None = None) -> str | None:
 
 
 def hostname(url: str) -> str:
-    return urlparse(url).hostname.lower() if urlparse(url).hostname else ""
+    parsed = urlparse(url)
+    return parsed.hostname.lower() if parsed.hostname else ""
+
+
+def is_google_news_url(url: str) -> bool:
+    host = hostname(url)
+
+    return (
+        host == "news.google.com"
+        or host.endswith(".news.google.com")
+    )
 
 
 def is_blocked_for_screenshot(article_url: str) -> bool:
@@ -77,30 +88,23 @@ def image_extension(content_type: str | None, source_url: str) -> str:
             "image/gif": ".gif",
             "image/avif": ".avif",
         }
+
         if mime_type in mime_extensions:
             return mime_extensions[mime_type]
 
     url_suffix = Path(urlparse(source_url).path).suffix.lower()
     if url_suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"}:
-        return url_suffix
+        return ".jpg" if url_suffix == ".jpeg" else url_suffix
 
     return ".jpg"
 
 
-def dedupe_candidates(
-    candidates: Iterable[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    result: list[tuple[str, str]] = []
-    seen: set[str] = set()
+def is_valid_aspect_ratio(width: int, height: int) -> bool:
+    if height <= 0:
+        return False
 
-    for source_type, image_url in candidates:
-        normalized = image_url.strip()
-
-        if normalized not in seen:
-            seen.add(normalized)
-            result.append((source_type, normalized))
-
-    return result
+    ratio = width / height
+    return MIN_ASPECT_RATIO <= ratio <= MAX_ASPECT_RATIO
 
 
 def extract_rss_images(rss_html: str | None) -> list[str]:
@@ -108,14 +112,14 @@ def extract_rss_images(rss_html: str | None) -> list[str]:
         return []
 
     soup = BeautifulSoup(rss_html, "html.parser")
-    urls: list[str] = []
+    images: list[str] = []
 
     for tag in soup.select("img[src], source[src]"):
         image_url = clean_url(tag.get("src"))
         if image_url:
-            urls.append(image_url)
+            images.append(image_url)
 
-    return urls
+    return images
 
 
 def extract_page_image_candidates(
@@ -134,9 +138,10 @@ def extract_page_image_candidates(
 
     for source_type, selector in meta_selectors:
         tag = soup.select_one(selector)
-        content = tag.get("content") if tag else None
-        image_url = clean_url(content, page_url)
+        if not tag:
+            continue
 
+        image_url = clean_url(tag.get("content"), page_url)
         if image_url:
             candidates.append((source_type, image_url))
 
@@ -144,38 +149,26 @@ def extract_page_image_candidates(
 
     for tag in content_root.select("img[src], source[src]"):
         image_url = clean_url(tag.get("src"), page_url)
+        if image_url:
+            candidates.append(("page_image", image_url))
 
-        if not image_url:
+    return candidates
+
+
+def dedupe_candidates(
+    candidates: Iterable[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for source_type, image_url in candidates:
+        if image_url in seen:
             continue
 
-        width = tag.get("width")
-        height = tag.get("height")
+        seen.add(image_url)
+        result.append((source_type, image_url))
 
-        try:
-            if width and int(width) < 300:
-                continue
-            if height and int(height) < 180:
-                continue
-        except ValueError:
-            pass
-
-        lowered_url = image_url.lower()
-        forbidden_markers = (
-            "logo",
-            "icon",
-            "avatar",
-            "sprite",
-            "banner",
-            "advert",
-            "adserver",
-        )
-
-        if any(marker in lowered_url for marker in forbidden_markers):
-            continue
-
-        candidates.append(("article_image", image_url))
-
-    return dedupe_candidates(candidates)
+    return result
 
 
 async def download_and_validate_image(
@@ -185,22 +178,13 @@ async def download_and_validate_image(
     output_stem: Path,
 ) -> dict[str, Any]:
     try:
-        response = await client.get(image_url)
+        response = await client.get(
+            image_url,
+            headers={"Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"},
+        )
         response.raise_for_status()
 
         content_type = response.headers.get("content-type", "")
-        if not content_type.lower().startswith("image/"):
-            return {
-                "status": "rejected",
-                "error": f"Unexpected content type: {content_type or 'missing'}",
-                "asset_source": source_type,
-                "asset_url": image_url,
-                "width": None,
-                "height": None,
-                "size_bytes": len(response.content),
-                "asset_path": "",
-            }
-
         content = response.content
 
         if len(content) < MIN_IMAGE_BYTES:
@@ -219,10 +203,11 @@ async def download_and_validate_image(
             with Image.open(io.BytesIO(content)) as image:
                 width, height = image.size
                 image.verify()
+
         except (UnidentifiedImageError, OSError) as exc:
             return {
                 "status": "rejected",
-                "error": f"Invalid image: {exc}",
+                "error": f"Invalid image data: {exc}",
                 "asset_source": source_type,
                 "asset_url": image_url,
                 "width": None,
@@ -243,13 +228,12 @@ async def download_and_validate_image(
                 "asset_path": "",
             }
 
-        aspect_ratio = width / height
-        if not MIN_ASPECT_RATIO <= aspect_ratio <= MAX_ASPECT_RATIO:
+        if not is_valid_aspect_ratio(width, height):
             return {
                 "status": "rejected",
                 "error": (
-                    f"Unsupported aspect ratio: {aspect_ratio:.3f} "
-                    f"for {width}x{height}"
+                    f"Unsupported image aspect ratio: "
+                    f"{width / height:.3f} ({width}x{height})"
                 ),
                 "asset_source": source_type,
                 "asset_url": image_url,
@@ -259,8 +243,8 @@ async def download_and_validate_image(
                 "asset_path": "",
             }
 
-        suffix = image_extension(content_type, image_url)
-        output_path = output_stem.with_suffix(suffix)
+        extension = image_extension(content_type, image_url)
+        output_path = output_stem.with_suffix(extension)
         output_path.write_bytes(content)
 
         return {
@@ -300,7 +284,11 @@ async def load_article_html(
 
         content_type = response.headers.get("content-type", "")
         if "html" not in content_type.lower():
-            return None, str(response.url), f"Unexpected page content type: {content_type}"
+            return (
+                None,
+                str(response.url),
+                f"Unexpected page content type: {content_type}",
+            )
 
         return response.text, str(response.url), None
 
@@ -308,26 +296,51 @@ async def load_article_html(
         return None, None, f"Article HTML download failed: {exc}"
 
 
-async def screenshot_viewport(
+async def open_resolved_page(
     browser: Browser,
     article_url: str,
-    output_path: Path,
-) -> dict[str, Any]:
+) -> tuple[Page | None, str | None, str | None, str | None]:
     page: Page | None = None
 
     try:
         page = await browser.new_page(
             viewport={"width": 1440, "height": 1080},
             device_scale_factor=1,
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/128.0.0.0 Safari/537.36"
+            ),
         )
 
-        await page.goto(
+        response = await page.goto(
             article_url,
             wait_until="domcontentloaded",
             timeout=PAGE_TIMEOUT_MS,
         )
         await page.wait_for_timeout(PAGE_RENDER_WAIT_MS)
 
+        status = response.status if response else None
+        if status is not None and status >= 400:
+            error = f"Browser page returned HTTP status {status}"
+        else:
+            error = None
+
+        return page, await page.content(), page.url, error
+
+    except Exception as exc:
+        if page:
+            await page.close()
+
+        return None, None, None, f"Browser page load failed: {exc}"
+
+
+async def screenshot_open_page(
+    page: Page,
+    output_path: Path,
+    asset_url: str,
+) -> dict[str, Any]:
+    try:
         await page.screenshot(
             path=str(output_path),
             full_page=False,
@@ -340,7 +353,7 @@ async def screenshot_viewport(
             "status": "ok",
             "error": "",
             "asset_source": "viewport_screenshot",
-            "asset_url": article_url,
+            "asset_url": asset_url,
             "width": width,
             "height": height,
             "size_bytes": output_path.stat().st_size,
@@ -352,6 +365,29 @@ async def screenshot_viewport(
             "status": "error",
             "error": f"Screenshot failed: {exc}",
             "asset_source": "viewport_screenshot",
+            "asset_url": asset_url,
+            "width": None,
+            "height": None,
+            "size_bytes": None,
+            "asset_path": "",
+        }
+
+
+async def screenshot_viewport(
+    browser: Browser,
+    article_url: str,
+    output_path: Path,
+) -> dict[str, Any]:
+    page, _, final_url, page_error = await open_resolved_page(
+        browser,
+        article_url,
+    )
+
+    if not page:
+        return {
+            "status": "error",
+            "error": page_error or "Browser page load failed",
+            "asset_source": "viewport_screenshot",
             "asset_url": article_url,
             "width": None,
             "height": None,
@@ -359,9 +395,24 @@ async def screenshot_viewport(
             "asset_path": "",
         }
 
+    try:
+        result = await screenshot_open_page(
+            page=page,
+            output_path=output_path,
+            asset_url=final_url or article_url,
+        )
+
+        if page_error:
+            result["error"] = (
+                f"{page_error}; {result['error']}"
+                if result["error"]
+                else page_error
+            )
+
+        return result
+
     finally:
-        if page:
-            await page.close()
+        await page.close()
 
 
 def make_output_stem(cluster_id: str, article_id: str) -> Path:
@@ -382,77 +433,115 @@ async def collect_asset(
         ("rss_image", image_url)
         for image_url in extract_rss_images(row.get("rss_description"))
     ]
-
-    html, final_url, page_error = await load_article_html(client, article_url)
-
-    if html and final_url:
-        candidates.extend(extract_page_image_candidates(html, final_url))
-
-    candidates = dedupe_candidates(candidates)
     rejected_errors: list[str] = []
+    page_error: str | None = None
+    resolved_url = article_url
+    resolved_page: Page | None = None
 
-    for source_type, image_url in candidates:
-        image_result = await download_and_validate_image(
-            client=client,
-            image_url=image_url,
-            source_type=source_type,
-            output_stem=output_stem,
-        )
+    try:
+        if is_google_news_url(article_url):
+            resolved_page, html, browser_url, page_error = await open_resolved_page(
+                browser,
+                article_url,
+            )
 
-        if image_result["status"] == "ok":
+            if browser_url:
+                resolved_url = browser_url
+
+            if html and resolved_url:
+                candidates.extend(
+                    extract_page_image_candidates(html, resolved_url)
+                )
+
+        else:
+            html, final_url, page_error = await load_article_html(
+                client,
+                article_url,
+            )
+
+            if final_url:
+                resolved_url = final_url
+
+            if html and resolved_url:
+                candidates.extend(
+                    extract_page_image_candidates(html, resolved_url)
+                )
+
+        candidates = dedupe_candidates(candidates)
+
+        for source_type, image_url in candidates:
+            image_result = await download_and_validate_image(
+                client=client,
+                image_url=image_url,
+                source_type=source_type,
+                output_stem=output_stem,
+            )
+
+            if image_result["status"] == "ok":
+                return {
+                    **row,
+                    "asset_type": "image",
+                    **image_result,
+                }
+
+            rejected_errors.append(
+                f"{source_type}: {image_result.get('error', 'rejected')}"
+            )
+
+        if is_blocked_for_screenshot(resolved_url):
+            details = "; ".join(rejected_errors)
+
             return {
                 **row,
-                "asset_type": "image",
-                **image_result,
+                "asset_type": "none",
+                "status": "blocked",
+                "asset_source": "screenshot_blocklist",
+                "asset_url": resolved_url,
+                "asset_path": "",
+                "width": None,
+                "height": None,
+                "size_bytes": None,
+                "error": (
+                    "Screenshot skipped for blocked domain"
+                    + (f"; {details}" if details else "")
+                ),
             }
 
-        rejected_errors.append(
-            f"{source_type}: {image_result.get('error', 'rejected')}"
-        )
+        screenshot_path = output_stem.with_name(
+            f"{output_stem.name}_viewport"
+        ).with_suffix(".png")
 
-    if is_blocked_for_screenshot(article_url):
-        details = "; ".join(rejected_errors)
+        if resolved_page:
+            screenshot_result = await screenshot_open_page(
+                page=resolved_page,
+                output_path=screenshot_path,
+                asset_url=resolved_url,
+            )
+        else:
+            screenshot_result = await screenshot_viewport(
+                browser=browser,
+                article_url=resolved_url,
+                output_path=screenshot_path,
+            )
+
+        errors = [error for error in [page_error, *rejected_errors] if error]
+        if screenshot_result["error"]:
+            errors.append(screenshot_result["error"])
 
         return {
             **row,
-            "asset_type": "none",
-            "status": "blocked",
-            "asset_source": "screenshot_blocklist",
-            "asset_url": article_url,
-            "asset_path": "",
-            "width": None,
-            "height": None,
-            "size_bytes": None,
-            "error": (
-                "Screenshot skipped for blocked domain"
-                + (f"; {details}" if details else "")
+            "asset_type": (
+                "screenshot"
+                if screenshot_result["status"] == "ok"
+                else "none"
             ),
+            **screenshot_result,
+            "error": "; ".join(errors),
         }
 
-    screenshot_path = output_stem.with_name(
-        f"{output_stem.name}_viewport"
-    ).with_suffix(".png")
-
-    screenshot_result = await screenshot_viewport(
-        browser=browser,
-        article_url=article_url,
-        output_path=screenshot_path,
-    )
-
-    errors = [error for error in [page_error, *rejected_errors] if error]
-    if screenshot_result["error"]:
-        errors.append(screenshot_result["error"])
-
-    return {
-        **row,
-        "asset_type": (
-            "screenshot"
-            if screenshot_result["status"] == "ok"
-            else "none"
-        ),
-        **screenshot_result,
-        "error": "; ".join(errors),
-    }
+    finally:
+        if resolved_page:
+            await resolved_page.close()
 
 
 def read_rows() -> list[dict[str, str]]:
