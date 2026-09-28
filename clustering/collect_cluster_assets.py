@@ -4,7 +4,6 @@ import asyncio
 import csv
 import io
 import os
-import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -17,9 +16,13 @@ from PIL import Image, UnidentifiedImageError
 from playwright.async_api import Browser, Page, async_playwright
 
 
-INPUT_CSV = Path("cluster_centroids.csv")
+INPUT_CSV = Path(
+    os.environ.get("ASSETS_INPUT_CSV", "cluster_centroids.csv")
+)
 OUTPUT_DIR = Path(os.environ.get("ASSETS_OUTPUT_DIR", "test_assets"))
-LOG_PATH = OUTPUT_DIR / "log.csv"
+
+ATTEMPTS_LOG_PATH = OUTPUT_DIR / "attempts.csv"
+MANIFEST_PATH = OUTPUT_DIR / "manifest.csv"
 
 HTTP_TIMEOUT_SECONDS = 30.0
 PAGE_TIMEOUT_MS = 30_000
@@ -62,10 +65,7 @@ def hostname(url: str) -> str:
 def is_google_news_url(url: str) -> bool:
     host = hostname(url)
 
-    return (
-        host == "news.google.com"
-        or host.endswith(".news.google.com")
-    )
+    return host == "news.google.com" or host.endswith(".news.google.com")
 
 
 def is_blocked_for_screenshot(article_url: str) -> bool:
@@ -180,7 +180,12 @@ async def download_and_validate_image(
     try:
         response = await client.get(
             image_url,
-            headers={"Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"},
+            headers={
+                "Accept": (
+                    "image/avif,image/webp,image/apng,image/svg+xml,"
+                    "image/*,*/*;q=0.8"
+                )
+            },
         )
         response.raise_for_status()
 
@@ -232,7 +237,7 @@ async def download_and_validate_image(
             return {
                 "status": "rejected",
                 "error": (
-                    f"Unsupported image aspect ratio: "
+                    "Unsupported image aspect ratio: "
                     f"{width / height:.3f} ({width}x{height})"
                 ),
                 "asset_source": source_type,
@@ -321,12 +326,13 @@ async def open_resolved_page(
         await page.wait_for_timeout(PAGE_RENDER_WAIT_MS)
 
         status = response.status if response else None
-        if status is not None and status >= 400:
-            error = f"Browser page returned HTTP status {status}"
-        else:
-            error = None
+        page_error = (
+            f"Browser page returned HTTP status {status}"
+            if status is not None and status >= 400
+            else None
+        )
 
-        return page, await page.content(), page.url, error
+        return page, await page.content(), page.url, page_error
 
     except Exception as exc:
         if page:
@@ -415,8 +421,15 @@ async def screenshot_viewport(
         await page.close()
 
 
-def make_output_stem(cluster_id: str, article_id: str) -> Path:
-    return OUTPUT_DIR / f"cluster_{cluster_id}_article_{article_id}"
+def make_output_stem(
+    cluster_id: str,
+    candidate_rank: str,
+    article_id: str,
+) -> Path:
+    cluster_dir = OUTPUT_DIR / f"cluster_{cluster_id}"
+    cluster_dir.mkdir(parents=True, exist_ok=True)
+
+    return cluster_dir / f"rank_{candidate_rank}_article_{article_id}"
 
 
 async def collect_asset(
@@ -425,9 +438,14 @@ async def collect_asset(
     row: dict[str, str],
 ) -> dict[str, Any]:
     cluster_id = row["cluster_id"]
+    candidate_rank = row.get("candidate_rank") or "1"
     article_id = row["article_id"]
     article_url = row["article_url"]
-    output_stem = make_output_stem(cluster_id, article_id)
+    output_stem = make_output_stem(
+        cluster_id=cluster_id,
+        candidate_rank=candidate_rank,
+        article_id=article_id,
+    )
 
     candidates: list[tuple[str, str]] = [
         ("rss_image", image_url)
@@ -480,6 +498,8 @@ async def collect_asset(
             if image_result["status"] == "ok":
                 return {
                     **row,
+                    "resolved_url": resolved_url,
+                    "resolved_host": hostname(resolved_url),
                     "asset_type": "image",
                     **image_result,
                 }
@@ -493,6 +513,8 @@ async def collect_asset(
 
             return {
                 **row,
+                "resolved_url": resolved_url,
+                "resolved_host": hostname(resolved_url),
                 "asset_type": "none",
                 "status": "blocked",
                 "asset_source": "screenshot_blocklist",
@@ -530,6 +552,8 @@ async def collect_asset(
 
         return {
             **row,
+            "resolved_url": resolved_url,
+            "resolved_host": hostname(resolved_url),
             "asset_type": (
                 "screenshot"
                 if screenshot_result["status"] == "ok"
@@ -547,7 +571,7 @@ async def collect_asset(
 def read_rows() -> list[dict[str, str]]:
     if not INPUT_CSV.exists():
         print(
-            f"Файл {INPUT_CSV} не найден.",
+            f"Input CSV not found: {INPUT_CSV}",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -557,12 +581,70 @@ def read_rows() -> list[dict[str, str]]:
 
     if not rows:
         print(
-            f"Файл {INPUT_CSV} не содержит записей.",
+            f"Input CSV has no rows: {INPUT_CSV}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    required_fields = {
+        "cluster_id",
+        "article_id",
+        "article_url",
+    }
+    missing = required_fields.difference(rows[0].keys())
+
+    if missing:
+        print(
+            "Input CSV is missing required fields: "
+            + ", ".join(sorted(missing)),
             file=sys.stderr,
         )
         raise SystemExit(1)
 
     return rows
+
+
+def output_fieldnames() -> list[str]:
+    return [
+        "cluster_id",
+        "run_id",
+        "cluster_size",
+        "representative_article_id",
+        "representative_title",
+        "candidate_rank",
+        "is_representative",
+        "centroid_distance",
+        "article_id",
+        "article_title",
+        "article_url",
+        "source",
+        "published",
+        "resolved_url",
+        "resolved_host",
+        "asset_type",
+        "status",
+        "asset_source",
+        "asset_url",
+        "asset_path",
+        "width",
+        "height",
+        "size_bytes",
+        "error",
+    ]
+
+
+def write_csv(
+    path: Path,
+    rows: list[dict[str, Any]],
+) -> None:
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=output_fieldnames(),
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 async def main() -> None:
@@ -594,6 +676,7 @@ async def main() -> None:
                     print(
                         f"[{index}/{len(rows)}] "
                         f"cluster={row['cluster_id']} "
+                        f"rank={row.get('candidate_rank', '1')} "
                         f"article={row['article_id']}"
                     )
                     result = await collect_asset(browser, client, row)
@@ -602,45 +685,43 @@ async def main() -> None:
             finally:
                 await browser.close()
 
-    fieldnames = [
-        "cluster_id",
-        "run_id",
-        "cluster_size",
-        "representative_article_id",
-        "representative_title",
-        "article_id",
-        "article_title",
-        "article_url",
-        "source",
-        "published",
-        "asset_type",
-        "status",
-        "asset_source",
-        "asset_url",
-        "asset_path",
-        "width",
-        "height",
-        "size_bytes",
-        "error",
-    ]
+    write_csv(ATTEMPTS_LOG_PATH, results)
 
-    with LOG_PATH.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(
-            file,
-            fieldnames=fieldnames,
-            extrasaction="ignore",
-        )
-        writer.writeheader()
-        writer.writerows(results)
+    successful_results = [
+        result
+        for result in results
+        if result["status"] == "ok"
+        and result["asset_type"] in {"image", "screenshot"}
+        and result["asset_path"]
+    ]
+    write_csv(MANIFEST_PATH, successful_results)
 
     summary: dict[str, int] = {}
     for result in results:
         key = f"{result['asset_type']}:{result['status']}"
         summary[key] = summary.get(key, 0) + 1
 
+    successful_by_cluster: dict[str, int] = {}
+    for result in successful_results:
+        cluster_id = str(result["cluster_id"])
+        successful_by_cluster[cluster_id] = (
+            successful_by_cluster.get(cluster_id, 0) + 1
+        )
+
     print()
-    print(f"Готово. Лог: {LOG_PATH}")
-    print("Сводка:", summary)
+    print(f"Input: {INPUT_CSV}")
+    print(f"Attempts log: {ATTEMPTS_LOG_PATH}")
+    print(f"Manifest: {MANIFEST_PATH}")
+    print("Summary:", summary)
+    print(
+        "Successful assets by cluster:",
+        dict(
+            sorted(
+                successful_by_cluster.items(),
+                key=lambda item: int(item[0]),
+            )
+        ),
+    )
 
 
 if __name__ == "__main__":
