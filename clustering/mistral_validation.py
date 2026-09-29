@@ -509,7 +509,7 @@ def validate_mistral_video_script(
     """
     errors: list[str] = []
 
-    _expected_target_duration(input_payload)
+    requested_minimum_duration = _expected_target_duration(input_payload)
 
     allowed_references = _allowed_topic_references(input_payload)
     allowed_sources = _allowed_source_names(input_payload)
@@ -525,6 +525,14 @@ def validate_mistral_video_script(
         )
 
     duration_sum = sum(scene.duration_seconds for scene in scenes)
+
+    if duration_sum < requested_minimum_duration:
+        errors.append(
+            "Scene duration sum must not be shorter than the requested "
+            "minimum duration: "
+            f"expected_at_least={requested_minimum_duration}, "
+            f"actual={duration_sum}"
+        )
 
     if not MIN_VIDEO_DURATION_SECONDS <= duration_sum <= MAX_VIDEO_DURATION_SECONDS:
         errors.append(

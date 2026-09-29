@@ -32,6 +32,10 @@ Create a concrete, source-attributed global news recap in natural American
 English. The viewer must learn what happened, who reported it, how monitored
 coverage changed during the analysis period, and where supplied sources differ.
 
+The requested duration provided in INPUT_JSON.video_requirements is a minimum,
+not an exact target. The recap may be longer when needed to cover every
+editorial topic with concrete, source-attributed narration.
+
 The output is used by:
 1. a text-to-speech service with an American English news voice;
 2. an AI visual-generation system;
@@ -98,8 +102,11 @@ NARRATION RULES:
 12. narration_script.full_voiceover must be the exact concatenation of all
     scenes[].narration values in ascending scene_number order, joined with
     exactly one space.
-13. Every editorial topic should be referenced by at least one scene.
-14. Do not create a standalone intro or outro scene.
+13. Every editorial topic in INPUT_JSON.editorial_topics must be referenced
+    by at least one scene. This is mandatory.
+14. Create as many scenes as needed to cover every editorial topic. Do not
+    omit an editorial topic to keep the recap close to the requested minimum.
+15. Do not create a standalone intro or outro scene.
 
 VISUAL RULES:
 
@@ -147,7 +154,10 @@ JSON OUTPUT RULES:
    must increase by exactly one without gaps.
 9. duration_seconds must be an integer between
    {MIN_SCENE_DURATION_SECONDS} and {MAX_SCENE_DURATION_SECONDS}.
-10. The sum of scenes[].duration_seconds must be between
+10. The sum of scenes[].duration_seconds must be at least
+    INPUT_JSON.video_requirements.target_duration_seconds and no more than
+    {MAX_VIDEO_DURATION_SECONDS}. INPUT_JSON.video_requirements.
+    target_duration_seconds is a minimum, not an exact total duration.
     {MIN_VIDEO_DURATION_SECONDS} and {MAX_VIDEO_DURATION_SECONDS}.
 11. video_metadata.estimated_duration_seconds must exactly equal the sum of
     scenes[].duration_seconds.
@@ -220,7 +230,8 @@ Before returning the JSON, silently verify all of the following:
 4. Every topic_reference exactly matches a value in INPUT_JSON.editorial_topics.
 5. Every scene has at least {MIN_SCENE_WORDS} narration words.
 6. No narration exceeds {MAX_WORDS_PER_SECOND} words per duration second.
-7. Scene durations total between {MIN_VIDEO_DURATION_SECONDS} and
+7. Scene durations total at least
+   INPUT_JSON.video_requirements.target_duration_seconds and no more than
    {MAX_VIDEO_DURATION_SECONDS} seconds.
 8. estimated_duration_seconds equals the sum of scene durations.
 9. full_voiceover exactly equals scene narrations joined by one space.
@@ -237,23 +248,7 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
 
     Raw graph data and internal clustering metrics remain backend-only.
     """
-    agenda_summary = input_payload.get("agenda_summary")
     editorial_topics = input_payload.get("editorial_topics") or []
-
-    # if previous_run is None:
-    #     raise ValueError(
-    #         "Mistral request cannot be built: previous_run is required"
-    #     )
-
-    # if current_run is None:
-    #     raise ValueError(
-    #         "Mistral request cannot be built: current_run is required"
-    #     )
-
-    if agenda_summary is None:
-        raise ValueError(
-            "Mistral request cannot be built: agenda_summary is required"
-        )
 
     if not isinstance(editorial_topics, list) or not editorial_topics:
         raise ValueError(
@@ -265,7 +260,9 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
     for topic in editorial_topics:
         if not isinstance(topic, dict):
             continue
+
         coverage_momentum = topic.get("coverage_momentum") or {}
+
         compact_topics.append(
             {
                 "topic_reference": topic.get("topic_reference"),
@@ -291,7 +288,6 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "video_requirements": input_payload["video_requirements"],
         "analysis_context": input_payload["analysis_context"],
-        "agenda_summary": agenda_summary,
         "editorial_topics": compact_topics,
         "constraints": input_payload["constraints"],
     }
@@ -308,11 +304,13 @@ def build_mistral_user_prompt(input_payload: dict[str, Any]) -> str:
         "Production requirements:\n"
         f"- Language: {requirements['language']}\n"
         f"- Accent and delivery: {requirements['accent']}\n"
-        f"- Requested duration: "
+        f"- Minimum requested duration: "
         f"{requirements['target_duration_seconds']} seconds\n"
-        f"- Allowed generated duration: "
-        f"{MIN_VIDEO_DURATION_SECONDS} to "
-        f"{MAX_VIDEO_DURATION_SECONDS} seconds\n"
+        f"- The total duration must be at least "
+        f"{requirements['target_duration_seconds']} seconds and no more than "
+        f"{MAX_VIDEO_DURATION_SECONDS} seconds.\n"
+        f"- Do not shorten the recap to exactly the minimum when additional "
+        f"supplied editorial topics can be covered with concrete, attributed facts.\n"
         f"- Voice style: {requirements['voice_style']}\n"
         f"- Editorial format: {requirements['format']}\n"
         f"- Audience: {requirements['audience']}\n"
