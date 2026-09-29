@@ -9,7 +9,7 @@ DEFAULT_TEMPERATURE = 0.1
 DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_TOKENS = 4096
 
-MIN_VIDEO_DURATION_SECONDS = 120
+MIN_VIDEO_DURATION_SECONDS = 60
 MAX_VIDEO_DURATION_SECONDS = 600
 MIN_SCENE_DURATION_SECONDS = 8
 MAX_SCENE_DURATION_SECONDS = 20
@@ -237,20 +237,18 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
 
     Raw graph data and internal clustering metrics remain backend-only.
     """
-    previous_run = input_payload.get("previous_run")
-    current_run = input_payload.get("current_run")
     agenda_summary = input_payload.get("agenda_summary")
     editorial_topics = input_payload.get("editorial_topics") or []
 
-    if previous_run is None:
-        raise ValueError(
-            "Mistral request cannot be built: previous_run is required"
-        )
+    # if previous_run is None:
+    #     raise ValueError(
+    #         "Mistral request cannot be built: previous_run is required"
+    #     )
 
-    if current_run is None:
-        raise ValueError(
-            "Mistral request cannot be built: current_run is required"
-        )
+    # if current_run is None:
+    #     raise ValueError(
+    #         "Mistral request cannot be built: current_run is required"
+    #     )
 
     if agenda_summary is None:
         raise ValueError(
@@ -267,14 +265,17 @@ def _build_llm_input(input_payload: dict[str, Any]) -> dict[str, Any]:
     for topic in editorial_topics:
         if not isinstance(topic, dict):
             continue
-
+        coverage_momentum = topic.get("coverage_momentum") or {}
         compact_topics.append(
             {
                 "topic_reference": topic.get("topic_reference"),
                 "public_topic_title": topic.get("public_topic_title"),
                 "transition_type": topic.get("transition_type"),
                 "trend": topic.get("trend"),
-                "coverage_momentum": topic.get("coverage_momentum"),
+                "coverage_change_percent": coverage_momentum.get(
+                    "coverage_change_percent"
+                ),
+                "coverage_momentum": coverage_momentum,
                 "representative_article": topic.get(
                     "representative_article"
                 ),
