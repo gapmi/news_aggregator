@@ -186,23 +186,6 @@ def save_mistral_video_script(
                 scene_rows,
             )
 
-            execute_values(
-                cur,
-                """
-                INSERT INTO public.mistral_video_script_scenes (
-                    run_id,
-                    scene_number,
-                    duration_seconds,
-                    narration,
-                    visual_type,
-                    visual_prompt,
-                    topic_references
-                )
-                VALUES %s
-                """,
-                scene_rows,
-            )
-
 
 def save_mistral_failure(
     conn,
