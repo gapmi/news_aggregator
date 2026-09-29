@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+import re
 from typing import Any
 
 import numpy as np
@@ -20,6 +21,17 @@ MIN_EDITORIAL_EVIDENCE_ARTICLES = 2
 MIN_CENTRAL_EVIDENCE_SIMILARITY = 0.72
 MAX_CANDIDATE_EVIDENCE_ARTICLES = 40
 
+EDITORIAL_EXCLUDED_TOPIC_PATTERNS = (
+    r"\bclima\s+hoy\b",
+    r"\bpron[oó]stico\s+del\s+tiempo\b",
+    r"\bweather\s+forecast\b",
+    r"\bdaily\s+weather\b",
+)
+
+AGGREGATOR_SOURCE_PREFIXES = (
+    "google news",
+    "glglobal news",
+)
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
@@ -67,6 +79,26 @@ def _normalize_topic_name(value: str) -> str:
         .split()
     )
 
+def _is_excluded_editorial_topic(item: dict[str, Any]) -> bool:
+    """
+    Exclude recurring low-editorial-value weather forecast topics.
+
+    This filter only affects Mistral video-payload selection. It does not
+    modify articles, clusters, lineage, or historical database data.
+    """
+    text = " ".join(
+        str(value or "")
+        for value in (
+            item.get("topic_reference"),
+            item.get("public_topic_title"),
+        )
+    ).casefold()
+
+    return any(
+        re.search(pattern, text, flags=re.IGNORECASE)
+        for pattern in EDITORIAL_EXCLUDED_TOPIC_PATTERNS
+    )
+
 
 def _normalize_source_name(value: Any) -> str | None:
     if not isinstance(value, str):
@@ -78,6 +110,38 @@ def _normalize_source_name(value: Any) -> str | None:
         return None
 
     return normalized[:160]
+
+def _editorial_source_and_title(
+    source: Any,
+    title: str,
+) -> tuple[str | None, str]:
+    """
+    Convert aggregator RSS attribution into a best-effort publisher attribution.
+
+    For sources such as Google News or GlGlobal News, a headline ending in
+    " - Publisher" provides the publisher name. The fallback does not alter
+    database records; it affects only the Mistral payload.
+    """
+    source_name = _normalize_source_name(source)
+    clean_title = _normalize_whitespace(title)
+
+    if source_name is None:
+        return None, clean_title
+
+    is_aggregator = source_name.casefold().startswith(
+        AGGREGATOR_SOURCE_PREFIXES
+    )
+
+    if not is_aggregator or " - " not in clean_title:
+        return source_name, clean_title
+
+    article_title, publisher = clean_title.rsplit(" - ", 1)
+    publisher = _normalize_source_name(publisher)
+
+    if not article_title or publisher is None:
+        return source_name, clean_title
+
+    return publisher, article_title
 
 
 def _cosine_similarity(
@@ -252,7 +316,10 @@ def _load_central_evidence_articles(
 
     for row in rows:
         title = _normalize_whitespace(row["title"])
-        source_name = _normalize_source_name(row["source"])
+        source_name, title = _editorial_source_and_title(
+            row["source"],
+            title,
+        )
 
         if not title or source_name is None:
             continue
@@ -643,6 +710,9 @@ def _select_editorial_topics(
         )
 
     def is_eligible(item: dict[str, Any]) -> bool:
+        if _is_excluded_editorial_topic(item):
+            return False
+
         if evidence_count(item) < MIN_EDITORIAL_EVIDENCE_ARTICLES:
             return False
 
