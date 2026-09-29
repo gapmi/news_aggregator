@@ -12,7 +12,7 @@ DEFAULT_MAX_TOKENS = 4096
 MIN_VIDEO_DURATION_SECONDS = 60
 MAX_VIDEO_DURATION_SECONDS = 600
 MIN_SCENE_DURATION_SECONDS = 8
-MAX_SCENE_DURATION_SECONDS = 20
+MAX_SCENE_DURATION_SECONDS = 30
 MIN_SCENE_WORDS = 20
 MAX_WORDS_PER_SECOND = 2.8
 
@@ -62,7 +62,10 @@ FACTUAL RULES:
    claim is confirmed unless INPUT_JSON explicitly provides confirmation.
 10. Do not invent causes, motives, explanations, reactions, quotes,
     consequences, identities, legal reasoning, or outcomes.
-11. Do not add generic filler when a concrete attributable fact is available.
+11. Do not make claims based on what a supplied source did not say, did not
+    report, did not confirm, or did not address. Absence of a detail in an
+    evidence title is not evidence that the source omitted or contradicted it.
+12. Do not add generic filler when a concrete attributable fact is available.
 
 COVERAGE RULES:
 
