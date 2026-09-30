@@ -606,6 +606,8 @@ def read_rows() -> list[dict[str, str]]:
 
 def output_fieldnames() -> list[str]:
     return [
+        "scene_number",
+        "topic_reference",
         "cluster_id",
         "run_id",
         "cluster_size",
