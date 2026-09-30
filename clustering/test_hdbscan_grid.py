@@ -1,4 +1,4 @@
-# test_hdbscan_grid.py
+# test_hdbscan_grid.py — тестовая кластеризация без записи в БД
 import argparse
 import json
 import os
@@ -7,6 +7,7 @@ from collections import Counter
 import hdbscan
 import numpy as np
 import psycopg2
+import psycopg2.extras
 from pgvector.psycopg2 import register_vector
 
 
@@ -134,6 +135,7 @@ def run_clustering(
     min_samples,
     cluster_selection_method,
     cluster_selection_epsilon,
+    top_n=5,
 ):
     rows, X = load_batch()
     if rows is None:
@@ -159,16 +161,55 @@ def run_clustering(
     largest_cluster_ratio = largest_cluster_size / len(rows) if rows else 0.0
     noise_ratio = noise_count / len(rows) if rows else 0.0
 
-    print(
-        f"CONFIG: min_cluster_size={min_cluster_size}, "
-        f"min_samples={min_samples}, "
-        f"method={cluster_selection_method}, "
-        f"epsilon={cluster_selection_epsilon}"
-    )
-    print(f"articles={len(rows)}, clusters={cluster_count}, noise={noise_count}, "
-          f"noise_ratio={noise_ratio:.4f}, largest={largest_cluster_size}, "
-          f"largest_ratio={largest_cluster_ratio:.4f}")
-    print(f"label_counts={dict(sorted(counts.items()))}\n")
+    print("\n" + "=" * 60)
+    print("HDBSCAN РљРћРќР¤РР“РЈР РђР¦РРЇ")
+    print("=" * 60)
+    print(f"min_cluster_size={min_cluster_size}")
+    print(f"min_samples={min_samples}")
+    print(f"cluster_selection_method={cluster_selection_method}")
+    print(f"cluster_selection_epsilon={cluster_selection_epsilon}")
+    print("=" * 60)
+
+    print("\nР Р•Р—РЈР›Р¬РўРђРўР« РљР›РђРЎРўР•Р РР—РђР¦РР")
+    print("=" * 60)
+    print(f"Р’СЃРµРіРѕ СЃС‚Р°С‚РµР№: {len(rows)}")
+    print(f"РљР»Р°СЃС‚РµСЂРѕРІ: {cluster_count}")
+    print(f"РЁСѓРј (noise_count): {noise_count}")
+    print(f"РЁСѓРј (noise_ratio): {noise_ratio:.4f}")
+    print(f"РљСЂСѓРїРЅРµР№С€РёР№ РєР»Р°СЃС‚РµСЂ: {largest_cluster_size}")
+    print(f"РљСЂСѓРїРЅРµР№С€РёР№ РєР»Р°СЃС‚РµСЂ (ratio): {largest_cluster_ratio:.4f}")
+
+    print("\nР Р°СЃРїСЂРµРґРµР»РµРЅРёРµ РїРѕ РєР»Р°СЃС‚РµСЂР°Рј:")
+    print(dict(sorted(counts.items())))
+
+    top_clusters = sorted(
+        [(l, c) for l, c in counts.items() if l != -1],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:top_n]
+
+    print(f"\nРўРѕРї-{top_n} РєСЂСѓРїРЅРµР№С€РёС… РєР»Р°СЃС‚РµСЂРѕРІ:")
+    for label, size in top_clusters:
+        print(f"  РљР»Р°СЃС‚РµСЂ {label}: {size} СЃС‚Р°С‚РµР№")
+
+    # РџСЂРёРјРµСЂС‹ Р·Р°РіРѕР»РѕРІРєРѕРІ
+    grouped = {}
+    for row, label in zip(rows, labels):
+        label = int(label)
+        if label == -1:
+            continue
+        if label not in grouped:
+            grouped[label] = []
+        grouped[label].append(row["title"])
+
+    print(f"\nРџСЂРёРјРµСЂС‹ Р·Р°РіРѕР»РѕРІРєРѕРІ (С‚РѕРї-{top_n} РєР»Р°СЃС‚РµСЂРѕРІ, РїРѕ 5 С€С‚):")
+    for label, size in top_clusters:
+        titles = grouped[label][:5]
+        print(f"\n[РљР»Р°СЃС‚РµСЂ {label}, СЂР°Р·РјРµСЂ={size}]")
+        for i, title in enumerate(titles, 1):
+            print(f"  {i}. {title}")
+
+    print("\n" + "=" * 60 + "\n")
 
 
 def main():
