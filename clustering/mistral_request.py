@@ -62,9 +62,12 @@ FACTUAL RULES:
    claim is confirmed unless INPUT_JSON explicitly provides confirmation.
 10. Do not invent causes, motives, explanations, reactions, quotes,
     consequences, identities, legal reasoning, or outcomes.
-11. Do not make claims based on what a supplied source did not say, did not
-    report, did not confirm, or did not address. Absence of a detail in an
-    evidence title is not evidence that the source omitted or contradicted it.
+10. Do not invent causes, motives, explanations, reactions, quotes,
+    consequences, identities, legal reasoning, or outcomes.
+11. Do not claim that a supplied source did not report, did not mention,
+    did not address, did not confirm, or did not contradict a fact.
+    Absence of a detail in an evidence title is not evidence that the source
+    omitted, denied, or disputed it.
 12. Do not add generic filler when a concrete attributable fact is available.
 
 COVERAGE RULES:
