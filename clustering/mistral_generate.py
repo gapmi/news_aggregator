@@ -11,6 +11,7 @@ from clustering.mistral_client import (
     call_mistral,
 )
 from clustering.mistral_payload import build_mistral_video_payload
+from clustering.mistral_repair import build_mistral_repair_request
 from clustering.mistral_request import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MISTRAL_MODEL,
@@ -18,6 +19,7 @@ from clustering.mistral_request import (
     DEFAULT_TOP_P,
     build_mistral_request,
 )
+
 from clustering.mistral_storage import (
     save_mistral_failure,
     save_mistral_video_script,
@@ -160,8 +162,10 @@ def main() -> int:
                 raw_content=result.content,
                 input_payload=input_payload,
             )
-        except MistralVideoValidationError as exc:
+
+        except MistralVideoValidationError as initial_exc:
             conn.rollback()
+
             save_mistral_failure(
                 conn,
                 run_id=args.run_id,
@@ -169,17 +173,102 @@ def main() -> int:
                 input_payload=input_payload,
                 result=result,
                 status="validation_failed",
-                validation_errors=exc.errors,
+                validation_errors=initial_exc.errors,
                 raw_response_text=result.content,
             )
             conn.commit()
 
             print()
             print("validation=failed")
-            for error in exc.errors:
+            print("repair_attempt=starting")
+
+            for error in initial_exc.errors:
                 print(f"- {error}")
 
-            return 2
+            repair_request = build_mistral_repair_request(
+                input_payload=input_payload,
+                invalid_raw_content=result.content,
+                validation_errors=initial_exc.errors,
+                model=args.model,
+            )
+
+            _print_request(repair_request)
+
+            try:
+                print("Sending one repair request to Mistral...")
+                repair_result = call_mistral(repair_request)
+                _print_response(repair_result)
+
+                script = parse_and_validate_mistral_video_script(
+                    raw_content=repair_result.content,
+                    input_payload=input_payload,
+                )
+
+            except MistralClientError as repair_api_exc:
+                conn.rollback()
+
+                save_mistral_failure(
+                    conn,
+                    run_id=args.run_id,
+                    request_body=repair_request,
+                    input_payload=input_payload,
+                    result=None,
+                    status="api_failed",
+                    validation_errors=[
+                        "Repair API request failed: "
+                        f"{type(repair_api_exc).__name__}: {repair_api_exc}"
+                    ],
+                    raw_response_text=None,
+                )
+                conn.commit()
+
+                print(
+                    "ERROR: Mistral repair request failed: "
+                    f"{type(repair_api_exc).__name__}: {repair_api_exc}",
+                    file=sys.stderr,
+                )
+                return 2
+
+            except MistralVideoValidationError as repair_validation_exc:
+                conn.rollback()
+
+                save_mistral_failure(
+                    conn,
+                    run_id=args.run_id,
+                    request_body=repair_request,
+                    input_payload=input_payload,
+                    result=repair_result,
+                    status="validation_failed",
+                    validation_errors=repair_validation_exc.errors,
+                    raw_response_text=repair_result.content,
+                )
+                conn.commit()
+
+                print()
+                print("repair_validation=failed")
+
+                for error in repair_validation_exc.errors:
+                    print(f"- {error}")
+
+                return 2
+
+            save_mistral_video_script(
+                conn,
+                run_id=args.run_id,
+                request_body=repair_request,
+                input_payload=input_payload,
+                result=repair_result,
+                script=script,
+            )
+            conn.commit()
+
+            print()
+            print("repair_validation=passed")
+            print(f"saved_run_id={args.run_id}")
+            print(f"saved_scene_count={len(script.scenes)}")
+            print(f"title={script.video_metadata.title}")
+
+            return 0
 
         save_mistral_video_script(
             conn,
