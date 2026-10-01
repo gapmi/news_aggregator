@@ -514,6 +514,15 @@ def validate_mistral_video_script(
     allowed_references = _allowed_topic_references(input_payload)
     allowed_sources = _allowed_source_names(input_payload)
 
+    expected_scene_count = len(allowed_references)
+
+    if len(script.scenes) != expected_scene_count:
+        errors.append(
+            "Scene count must exactly equal the number of editorial topics: "
+            f"expected={expected_scene_count}, "
+            f"actual={len(script.scenes)}"
+        )
+
     scenes = script.scenes
     scene_numbers = [scene.scene_number for scene in scenes]
     expected_scene_numbers = list(range(1, len(scenes) + 1))

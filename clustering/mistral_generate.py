@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-topics",
         type=int,
-        default=6,
+        default=8,
     )
     parser.add_argument(
         "--headlines-per-topic",
