@@ -41,12 +41,6 @@ def still_filter(frame_count: int) -> str:
     return (
         "scale=2400:1350:force_original_aspect_ratio=increase,"
         "crop=2400:1350,"
-        "zoompan="
-        "z='min(zoom+0.00055,1.12)':"
-        f"d={frame_count}:"
-        "x='iw/2-(iw/zoom/2)':"
-        "y='ih/2-(ih/zoom/2)':"
-        f"s={WIDTH}x{HEIGHT}:"
         f"fps={FPS},"
         "format=yuv420p,"
         "setsar=1,"
