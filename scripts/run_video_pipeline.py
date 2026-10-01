@@ -662,7 +662,8 @@ def main() -> int:
         run_command(
             [
                 sys.executable,
-                "scripts/export_scene_manifest.py",
+                "-m",
+                "scripts.export_scene_manifest",
                 "--run-id",
                 str(args.run_id),
                 "--output",
@@ -697,23 +698,25 @@ def main() -> int:
                 )
                 continue
 
-            run_command(
-                [
-                    sys.executable,
-                    "scripts/cartesia_tts_pilot.py",
-                    "--manifest",
-                    str(scene_manifest_path),
-                    "--scene-number",
-                    str(scene_number),
-                    "--output-dir",
-                    str(audio_dir),
-                ]
-            )
+        run_command(
+            [
+                sys.executable,
+                "-m",
+                "scripts.cartesia_tts_pilot",
+                "--manifest",
+                str(scene_manifest_path),
+                "--scene-number",
+                str(scene_number),
+                "--output-dir",
+                str(audio_dir),
+            ]
+        )
 
         run_command(
             [
                 sys.executable,
-                "scripts/build_audio_manifest.py",
+                "-m",
+                "scripts.build_audio_manifest",
                 "--run-id",
                 str(args.run_id),
                 "--audio-dir",
@@ -733,17 +736,17 @@ def main() -> int:
             },
         )
 
-        if not candidates_path.is_file() or args.force_assets:
-            run_command(
-                [
-                    sys.executable,
-                    "scripts/export_scene_asset_candidates.py",
-                    "--run-id",
-                    str(args.run_id),
-                    "--output-csv",
-                    str(candidates_path),
-                ]
-            )
+        run_command(
+            [
+                sys.executable,
+                "-m",
+                "scripts.export_scene_asset_candidates",
+                "--run-id",
+                str(args.run_id),
+                "--output-csv",
+                str(candidates_path),
+            ]
+        )
 
         update_pipeline_meta(
             conn,
@@ -787,7 +790,8 @@ def main() -> int:
         run_command(
             [
                 sys.executable,
-                "scripts/build_render_manifest.py",
+                "-m",
+                "scripts.build_render_manifest",
                 "--run-id",
                 str(args.run_id),
                 "--audio-manifest",
@@ -855,7 +859,8 @@ def main() -> int:
             run_command(
                 [
                     sys.executable,
-                    "scripts/render_news_video_v2.py",
+                    "-m",
+                    "scripts.render_news_video_v2",
                     "--manifest",
                     str(render_manifest_path),
                     "--output-dir",
