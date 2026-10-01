@@ -109,10 +109,15 @@ NARRATION RULES:
     scenes[].narration values in ascending scene_number order, joined with
     exactly one space.
 13. Every editorial topic in INPUT_JSON.editorial_topics must be referenced
-    by at least one scene. This is mandatory.
-14. Create as many scenes as needed to cover every editorial topic. Do not
-    omit an editorial topic to keep the recap close to the requested minimum.
-15. Do not create a standalone intro or outro scene.
+    by exactly one scene. This is mandatory.
+14. Create exactly one scene for each editorial topic in
+    INPUT_JSON.editorial_topics.
+15. The number of scenes must exactly equal the number of editorial topics.
+16. Do not split one editorial topic across multiple scenes.
+17. Each scene must include all necessary attributable details for its one
+    referenced editorial topic, while staying within its narration word limit.
+18. Do not create a standalone intro, outro, transition-only, recap-only, or
+    coverage-only scene.
 
 VISUAL RULES:
 

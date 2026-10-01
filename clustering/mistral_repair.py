@@ -402,6 +402,14 @@ Narration requirements:
 - Follow NARRATION_LENGTH_REQUIREMENTS exactly.
 - Each scene narration must be between its listed minimum_words and
   maximum_words inclusive. Aim near target_words.
+- Never exceed maximum_words for any scene.
+- Before returning JSON, count the words in every narration field.
+- Keep narration concise. Remove interpretation, explanation, analysis,
+  speculation, generic context, and repeated attribution before removing
+  source-grounded factual details.
+- Do not use phrases such as "positive economic shift", "regional cooperation",
+  "growing geopolitical strain", "evolving security concerns", or similar
+  analysis unless those exact claims are explicitly supplied in INPUT_PAYLOAD.
 - Every scene narration must contain at least 20 words, even when the
   assigned duration is short.
 - Do not create narration shorter than 20 words for 8-, 9-, 10-, 11-, 12-,
@@ -421,6 +429,13 @@ Narration requirements:
 Topic-reference requirements:
 - Every scene, including opening and closing scenes, must contain from one to
   three topic_references.
+- The total number of scenes must exactly equal the number of allowed editorial
+  topic references in INPUT_PAYLOAD.
+- Each allowed editorial topic reference must appear in exactly one scene.
+- Do not split one editorial topic into multiple scenes.
+- If the previous invalid script has multiple scenes for one topic, merge their
+  factual source-attributed content into one concise scene.
+- Do not add standalone openings, conclusions, transitions, or recap scenes.
 - Never return topic_references: [].
 - Every topic_references item must exactly match an allowed reference from
   INPUT_PAYLOAD.
