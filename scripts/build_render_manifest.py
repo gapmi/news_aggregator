@@ -133,12 +133,14 @@ def asset_sort_key(row: dict[str, str]) -> tuple[int, int, int, int, str]:
     asset_type = str(row.get("asset_type") or "").strip()
     source = str(row.get("asset_source") or "").strip()
 
-    is_image = asset_type == "image"
+    is_real_image = asset_type == "image"
+    is_screenshot = asset_type == "screenshot"
     representative = is_true(row.get("is_representative"))
 
     return (
         0 if representative else 1,
-        0 if is_image else 1,
+        0 if is_real_image else 1,
+        1 if is_screenshot else 0,
         integer_value(row.get("candidate_rank"), 9999),
         ASSET_SOURCE_PRIORITY.get(source, 9999),
         str(row.get("asset_path") or ""),
@@ -160,10 +162,7 @@ def select_assets(
         if str(row.get("status") or "").strip() != "ok":
             continue
 
-        if str(row.get("asset_type") or "").strip() not in {
-            "image",
-            "screenshot",
-        }:
+        if str(row.get("asset_type") or "").strip() != "image":
             continue
 
         asset_path = Path(str(row.get("asset_path") or "").strip())
@@ -261,10 +260,9 @@ def create_fallback_asset(
     scene_number: int,
 ) -> Path:
     """
-    Create a neutral non-text fallback visual when all source assets fail.
+    Create a neutral editorial fallback image.
 
-    The fallback intentionally has no headline, logos, UI, chart, numbers,
-    map labels, or real-world event depiction.
+    No text, UI, labels, chart-like lines, logos, icons, or fake event footage.
     """
     target_path = target_dir / "asset_01_fallback.png"
 
@@ -274,54 +272,29 @@ def create_fallback_asset(
     image = Image.new(
         "RGB",
         (width, height),
-        (18, 28, 42),
+        (31, 43, 55),
     )
 
-    draw = ImageDraw.Draw(image)
+    pixels = image.load()
 
     for y in range(height):
-        progress = y / max(height - 1, 1)
+        vertical = y / max(height - 1, 1)
 
-        red = int(18 + 10 * progress)
-        green = int(28 + 18 * progress)
-        blue = int(42 + 24 * progress)
+        for x in range(width):
+            horizontal = x / max(width - 1, 1)
 
-        draw.line(
-            [(0, y), (width, y)],
-            fill=(red, green, blue),
-        )
+            vignette = abs(horizontal - 0.5) * 28
+            horizon = max(0.0, 1.0 - abs(vertical - 0.62) * 3.2)
 
-    draw.ellipse(
-        (
-            int(width * 0.08),
-            int(height * 0.12),
-            int(width * 0.72),
-            int(height * 1.05),
-        ),
-        outline=(53, 92, 126),
-        width=8,
-    )
+            red = int(23 + horizon * 16 - vignette * 0.22)
+            green = int(34 + horizon * 24 - vignette * 0.30)
+            blue = int(48 + horizon * 34 - vignette * 0.42)
 
-    draw.ellipse(
-        (
-            int(width * 0.42),
-            int(height * -0.18),
-            int(width * 1.15),
-            int(height * 0.62),
-        ),
-        outline=(39, 69, 95),
-        width=6,
-    )
-
-    draw.rectangle(
-        (
-            int(width * 0.08),
-            int(height * 0.80),
-            int(width * 0.92),
-            int(height * 0.82),
-        ),
-        fill=(47, 78, 105),
-    )
+            pixels[x, y] = (
+                max(0, min(255, red)),
+                max(0, min(255, green)),
+                max(0, min(255, blue)),
+            )
 
     image.save(
         target_path,

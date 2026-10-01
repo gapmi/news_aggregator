@@ -38,6 +38,30 @@ SCREENSHOT_BLOCKLIST = {
     "bloomberg.com",
 }
 
+SCREENSHOT_TEXT_BLOCKLIST = (
+    "your request has been blocked",
+    "request has been blocked",
+    "performing security verification",
+    "security verification",
+    "confirm you are human",
+    "verify you are human",
+    "verify that you are human",
+    "checking your browser",
+    "just a moment",
+    "attention required",
+    "access denied",
+    "forbidden",
+    "captcha",
+    "recaptcha",
+    "cf-chl",
+    "cloudflare",
+    "unusual traffic",
+    "temporarily unavailable",
+    "please enable javascript",
+    "please enable cookies",
+    "robot check",
+)
+
 
 def clean_url(value: str | None, base_url: str | None = None) -> str | None:
     if not value:
@@ -340,6 +364,25 @@ async def open_resolved_page(
 
         return None, None, None, f"Browser page load failed: {exc}"
 
+async def has_blocked_page_text(page: Page) -> tuple[bool, str | None]:
+    """
+    Detect anti-bot, verification, CAPTCHA, login, and block pages before
+    accepting a screenshot as a visual asset.
+    """
+    try:
+        raw_text = await page.locator("body").inner_text(
+            timeout=5_000
+        )
+    except Exception as exc:
+        return True, f"Could not inspect screenshot page text: {exc}"
+
+    normalized = " ".join(raw_text.casefold().split())
+
+    for phrase in SCREENSHOT_TEXT_BLOCKLIST:
+        if phrase in normalized:
+            return True, f"Blocked screenshot page text: {phrase}"
+
+    return False, None
 
 async def screenshot_open_page(
     page: Page,
@@ -347,6 +390,19 @@ async def screenshot_open_page(
     asset_url: str,
 ) -> dict[str, Any]:
     try:
+        is_blocked, blocked_reason = await has_blocked_page_text(page)
+
+        if is_blocked:
+            return {
+                "status": "blocked",
+                "error": blocked_reason or "Screenshot page is blocked",
+                "asset_source": "viewport_screenshot",
+                "asset_url": asset_url,
+                "width": None,
+                "height": None,
+                "size_bytes": None,
+                "asset_path": "",
+            }
         await page.screenshot(
             path=str(output_path),
             full_page=False,
