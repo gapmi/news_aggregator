@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 WIDTH = 1920
@@ -255,6 +255,86 @@ def copy_asset(
 
     return target_path
 
+def create_fallback_asset(
+    *,
+    target_dir: Path,
+    scene_number: int,
+) -> Path:
+    """
+    Create a neutral non-text fallback visual when all source assets fail.
+
+    The fallback intentionally has no headline, logos, UI, chart, numbers,
+    map labels, or real-world event depiction.
+    """
+    target_path = target_dir / "asset_01_fallback.png"
+
+    width = 1920
+    height = 1080
+
+    image = Image.new(
+        "RGB",
+        (width, height),
+        (18, 28, 42),
+    )
+
+    draw = ImageDraw.Draw(image)
+
+    for y in range(height):
+        progress = y / max(height - 1, 1)
+
+        red = int(18 + 10 * progress)
+        green = int(28 + 18 * progress)
+        blue = int(42 + 24 * progress)
+
+        draw.line(
+            [(0, y), (width, y)],
+            fill=(red, green, blue),
+        )
+
+    draw.ellipse(
+        (
+            int(width * 0.08),
+            int(height * 0.12),
+            int(width * 0.72),
+            int(height * 1.05),
+        ),
+        outline=(53, 92, 126),
+        width=8,
+    )
+
+    draw.ellipse(
+        (
+            int(width * 0.42),
+            int(height * -0.18),
+            int(width * 1.15),
+            int(height * 0.62),
+        ),
+        outline=(39, 69, 95),
+        width=6,
+    )
+
+    draw.rectangle(
+        (
+            int(width * 0.08),
+            int(height * 0.80),
+            int(width * 0.92),
+            int(height * 0.82),
+        ),
+        fill=(47, 78, 105),
+    )
+
+    image.save(
+        target_path,
+        format="PNG",
+        optimize=True,
+    )
+
+    if not target_path.is_file() or target_path.stat().st_size == 0:
+        raise RuntimeError(
+            f"Could not create fallback asset: {target_path}"
+        )
+
+    return target_path
 
 def main() -> int:
     args = parse_args()
@@ -320,11 +400,7 @@ def main() -> int:
             max_assets=args.max_assets_per_scene,
         )
 
-        if not selected:
-            raise RuntimeError(
-                "No valid collected asset exists for scene "
-                f"{scene_number}. Check source_assets/attempts.csv."
-            )
+        use_fallback = not selected
 
         audio_file = str(audio_scene.get("audio_file") or "").strip()
 
@@ -348,39 +424,74 @@ def main() -> int:
                 f"{scene_number}: {actual_duration!r}"
             )
 
+
         scene_dir = args.output_dir / f"scene_{scene_number:03d}"
         scene_dir.mkdir(parents=True, exist_ok=True)
 
         copied_assets: list[str] = []
 
-        for index, row in enumerate(selected, start=1):
-            source_path = Path(str(row["asset_path"]))
-            copied_path = copy_asset(
-                source_path=source_path,
+        if use_fallback:
+            fallback_path = create_fallback_asset(
                 target_dir=scene_dir,
-                index=index,
+                scene_number=scene_number,
             )
 
-            copied_assets.append(str(copied_path.resolve()))
+            copied_assets.append(str(fallback_path.resolve()))
 
             selection_rows.append(
                 {
                     "scene_number": scene_number,
-                    "asset_index": index,
-                    "source_asset_path": str(source_path),
-                    "render_asset_path": str(copied_path.resolve()),
-                    "article_id": row.get("article_id"),
-                    "article_title": row.get("article_title"),
-                    "article_url": row.get("article_url"),
-                    "candidate_rank": row.get("candidate_rank"),
-                    "is_representative": row.get("is_representative"),
-                    "asset_type": row.get("asset_type"),
-                    "asset_source": row.get("asset_source"),
-                    "asset_url": row.get("asset_url"),
-                    "width": row.get("width"),
-                    "height": row.get("height"),
+                    "asset_index": 1,
+                    "source_asset_path": None,
+                    "render_asset_path": str(fallback_path.resolve()),
+                    "article_id": None,
+                    "article_title": None,
+                    "article_url": None,
+                    "candidate_rank": None,
+                    "is_representative": None,
+                    "asset_type": "generated_fallback",
+                    "asset_source": "neutral_abstract_fallback",
+                    "asset_url": None,
+                    "width": 1920,
+                    "height": 1080,
+                    "fallback_reason": (
+                        "No valid source image or screenshot was collected "
+                        "for this scene."
+                    ),
                 }
             )
+
+        else:
+            for index, row in enumerate(selected, start=1):
+                source_path = Path(str(row["asset_path"]))
+
+                copied_path = copy_asset(
+                    source_path=source_path,
+                    target_dir=scene_dir,
+                    index=index,
+                )
+
+                copied_assets.append(str(copied_path.resolve()))
+
+                selection_rows.append(
+                    {
+                        "scene_number": scene_number,
+                        "asset_index": index,
+                        "source_asset_path": str(source_path),
+                        "render_asset_path": str(copied_path.resolve()),
+                        "article_id": row.get("article_id"),
+                        "article_title": row.get("article_title"),
+                        "article_url": row.get("article_url"),
+                        "candidate_rank": row.get("candidate_rank"),
+                        "is_representative": row.get("is_representative"),
+                        "asset_type": row.get("asset_type"),
+                        "asset_source": row.get("asset_source"),
+                        "asset_url": row.get("asset_url"),
+                        "width": row.get("width"),
+                        "height": row.get("height"),
+                        "fallback_reason": None,
+                    }
+                )
 
         render_scenes.append(
             {
