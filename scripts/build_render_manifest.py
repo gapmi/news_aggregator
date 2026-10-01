@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 
 WIDTH = 1920
 HEIGHT = 1080
@@ -14,6 +16,12 @@ FPS = 30
 
 MAX_ASSETS_PER_SCENE = 3
 
+RENDER_NATIVE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+}
 
 ASSET_SOURCE_PRIORITY = {
     "rss_image": 0,
@@ -194,14 +202,55 @@ def copy_asset(
     target_dir: Path,
     index: int,
 ) -> Path:
-    suffix = source_path.suffix.lower() or ".jpg"
-    target_path = target_dir / f"asset_{index:02d}{suffix}"
+    source_suffix = source_path.suffix.lower()
 
-    shutil.copy2(source_path, target_path)
+    if source_suffix in RENDER_NATIVE_EXTENSIONS:
+        output_suffix = (
+            ".jpg"
+            if source_suffix == ".jpeg"
+            else source_suffix
+        )
+
+        target_path = target_dir / f"asset_{index:02d}{output_suffix}"
+
+        shutil.copy2(source_path, target_path)
+
+    else:
+        target_path = target_dir / f"asset_{index:02d}.png"
+
+        try:
+            with Image.open(source_path) as image:
+                if image.mode in {"RGBA", "LA"}:
+                    background = Image.new(
+                        "RGB",
+                        image.size,
+                        (0, 0, 0),
+                    )
+                    alpha = image.getchannel("A")
+                    background.paste(
+                        image,
+                        mask=alpha,
+                    )
+                    image = background
+                else:
+                    image = image.convert("RGB")
+
+                image.save(
+                    target_path,
+                    format="PNG",
+                    optimize=True,
+                )
+
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not normalize renderer asset: "
+                f"{source_path} → {target_path}: {exc}"
+            ) from exc
 
     if not target_path.is_file() or target_path.stat().st_size == 0:
         raise RuntimeError(
-            f"Could not copy selected asset: {source_path} → {target_path}"
+            "Could not create selected renderer asset: "
+            f"{source_path} → {target_path}"
         )
 
     return target_path
