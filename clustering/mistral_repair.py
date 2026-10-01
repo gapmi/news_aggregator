@@ -7,8 +7,10 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from clustering.mistral_validation import (
+    MIN_SCENE_WORDS,
     MistralVideoScript,
     MistralVideoValidationError,
+    REQUIRED_VISUAL_PROMPT_SUFFIX,
     parse_and_validate_mistral_video_script,
 )
 
@@ -18,11 +20,6 @@ DEFAULT_REPAIR_TEMPERATURE = 0.1
 MINIMUM_WORDS_PER_SECOND = 2.1
 MAXIMUM_WORDS_PER_SECOND = 2.8
 TARGET_WORDS_PER_SECOND = 2.35
-
-REQUIRED_VISUAL_PROMPT_SUFFIX = (
-    "16:9, no text, no logos, no watermark"
-)
-
 
 FORBIDDEN_INTERNAL_NARRATION_TERMS = (
     "cluster",
@@ -148,8 +145,9 @@ def _get_scene_narration_requirements(
             )
             continue
 
-        minimum_words = math.ceil(
-            duration_seconds * MINIMUM_WORDS_PER_SECOND
+        minimum_words = max(
+            MIN_SCENE_WORDS,
+            math.ceil(duration_seconds * MINIMUM_WORDS_PER_SECOND),
         )
         target_words = math.ceil(
             duration_seconds * TARGET_WORDS_PER_SECOND
@@ -404,6 +402,10 @@ Narration requirements:
 - Follow NARRATION_LENGTH_REQUIREMENTS exactly.
 - Each scene narration must be between its listed minimum_words and
   maximum_words inclusive. Aim near target_words.
+- Every scene narration must contain at least 20 words, even when the
+  assigned duration is short.
+- Do not create narration shorter than 20 words for 8-, 9-, 10-, 11-, 12-,
+  13-, 14-, or 15-second scenes.
 - The complete full_voiceover must be between minimum_full_voiceover_words and
   maximum_full_voiceover_words inclusive. Aim near target_full_voiceover_words,
   not near the minimum.
