@@ -55,7 +55,7 @@ def main() -> int:
     )
 
     credentials = flow.run_local_server(
-        host="0.0.0.0",
+        host="localhost",
         port=args.port,
         open_browser=False,
         authorization_prompt_message=(
