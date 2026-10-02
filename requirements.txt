@@ -18,3 +18,6 @@ yake>=0.4.8
 Pillow>=10.0.0
 playwright>=1.50.0,<2.0.0
 cartesia
+google-api-python-client>=2.140.0
+google-auth-oauthlib>=1.2.1
+google-auth-httplib2>=0.2.0
