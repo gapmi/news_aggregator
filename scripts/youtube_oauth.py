@@ -11,31 +11,39 @@ SCOPES = [
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 DEFAULT_CLIENT_SECRET = (
     PROJECT_ROOT / "secrets" / "youtube_client_secret.json"
 )
-DEFAULT_TOKEN_FILE = PROJECT_ROOT / "secrets" / "youtube_token.json"
+
+DEFAULT_TOKEN_FILE = (
+    PROJECT_ROOT / "secrets" / "youtube_token.json"
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Authorize YouTube upload OAuth and save refresh token."
     )
+
     parser.add_argument(
         "--client-secret",
         type=Path,
         default=DEFAULT_CLIENT_SECRET,
     )
+
     parser.add_argument(
         "--token-file",
         type=Path,
         default=DEFAULT_TOKEN_FILE,
     )
+
     parser.add_argument(
         "--port",
         type=int,
         default=8081,
     )
+
     return parser.parse_args()
 
 
@@ -54,8 +62,10 @@ def main() -> int:
         scopes=SCOPES,
     )
 
+    flow.redirect_uri = f"http://localhost:{args.port}/"
+
     credentials = flow.run_local_server(
-        host="localhost",
+        host="0.0.0.0",
         port=args.port,
         open_browser=False,
         authorization_prompt_message=(
