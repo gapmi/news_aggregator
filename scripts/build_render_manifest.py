@@ -10,8 +10,8 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 
-WIDTH = 1920
-HEIGHT = 1080
+WIDTH = 2400
+HEIGHT = 1350
 FPS = 30
 
 MAX_ASSETS_PER_SCENE = 3
@@ -425,8 +425,8 @@ def main() -> int:
                     "asset_type": "generated_fallback",
                     "asset_source": "neutral_abstract_fallback",
                     "asset_url": None,
-                    "width": 1920,
-                    "height": 1080,
+                    "width": 2400,
+                    "height": 1350,
                     "fallback_reason": (
                         "No valid source image or screenshot was collected "
                         "for this scene."

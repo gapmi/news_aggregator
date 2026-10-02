@@ -29,6 +29,9 @@ DEFAULT_MAX_TOPICS = 8
 DEFAULT_HEADLINES_PER_TOPIC = 3
 DEFAULT_MAX_ASSETS_PER_SCENE = 3
 
+FINAL_WIDTH = 2400
+FINAL_HEIGHT = 1350
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -209,16 +212,16 @@ def validate_final_video(
             f"{audio_stream.get('codec_name')!r}"
         )
 
-    if video_stream.get("width") != 1920:
+    if video_stream.get("width") != FINAL_WIDTH:
         raise RuntimeError(
-            "Final MP4 width must be 1920; got "
-            f"{video_stream.get('width')!r}"
+            f"Final MP4 width must be {FINAL_WIDTH}; got "
+            f"{video_stream.get('width')}"
         )
 
-    if video_stream.get("height") != 1080:
+    if video_stream.get("height") != FINAL_HEIGHT:
         raise RuntimeError(
-            "Final MP4 height must be 1080; got "
-            f"{video_stream.get('height')!r}"
+            f"Final MP4 height must be {FINAL_HEIGHT}; got "
+            f"{video_stream.get('height')}"
         )
 
     format_data = probe.get("format")
