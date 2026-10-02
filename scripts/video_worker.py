@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKER_LOCK_KEY = 917_244_613
 
-SCHEDULE_HOURS_UTC = {6, 18}
+SCHEDULE_HOURS_UTC = {6, 17}
 
 POLL_SECONDS = int(
     os.getenv("VIDEO_WORKER_POLL_SECONDS", "60")
