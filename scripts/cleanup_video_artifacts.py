@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--retention-hours",
         type=int,
-        default=24,
+        default=48,
     )
     parser.add_argument(
         "--dry-run",
