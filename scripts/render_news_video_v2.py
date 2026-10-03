@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 
-WIDTH = 1920
-HEIGHT = 1080
+WIDTH = 2400
+HEIGHT = 1350
 FPS = 30
 CRF = "20"
 PRESET = "medium"
