@@ -265,9 +265,9 @@ def create_fallback_asset(
     No text, UI, labels, chart-like lines, logos, icons, or fake event footage.
     """
     target_path = target_dir / "asset_01_fallback.png"
-    #2400!
-    width = 2400
-    height = 1350
+
+    width = WIDTH
+    height = HEIGHT
 
     image = Image.new(
         "RGB",
