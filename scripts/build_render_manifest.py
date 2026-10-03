@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageFilter
 
 
 WIDTH = 2400
@@ -129,7 +131,93 @@ def is_true(value: str | None) -> bool:
     }
 
 
-def asset_sort_key(row: dict[str, str]) -> tuple[int, int, int, int, str]:
+def image_quality_metrics(path: Path) -> dict[str, float]:
+    """
+    Calculate lightweight visual-information metrics on a small image copy.
+
+    The function is intentionally conservative. It does not judge editorial
+    value; it only identifies images that are likely flat, blank, nearly
+    monochrome, or visually empty.
+    """
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+        image.thumbnail((320, 180))
+
+        pixels = list(image.getdata())
+        total = len(pixels)
+
+        if total == 0:
+            return {
+                "dominant_share": 1.0,
+                "entropy": 0.0,
+                "edge_share": 0.0,
+                "saturation_mean": 0.0,
+            }
+
+        quantized = [
+            (red // 32, green // 32, blue // 32)
+            for red, green, blue in pixels
+        ]
+        color_counts = Counter(quantized)
+        dominant_share = max(color_counts.values()) / total
+
+        gray = image.convert("L")
+        histogram = gray.histogram()
+
+        entropy = 0.0
+
+        for count in histogram:
+            if count <= 0:
+                continue
+
+            probability = count / total
+            entropy -= probability * math.log2(probability)
+
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        edge_share = sum(
+            value >= 35
+            for value in edges.getdata()
+        ) / total
+
+        saturation_total = 0.0
+
+        for red, green, blue in pixels:
+            maximum = max(red, green, blue)
+            minimum = min(red, green, blue)
+
+            if maximum:
+                saturation_total += (maximum - minimum) / maximum
+
+        saturation_mean = saturation_total / total
+
+    return {
+        "dominant_share": dominant_share,
+        "entropy": entropy,
+        "edge_share": edge_share,
+        "saturation_mean": saturation_mean,
+    }
+
+
+def is_low_information_visual(path: Path) -> tuple[bool, dict[str, float]]:
+    """
+    Reject a visual only when at least two independent weak signals appear.
+
+    This avoids rejecting legitimate editorial photos that are dark, simple,
+    low-saturation, or dominated by one color, but still have useful details.
+    """
+    metrics = image_quality_metrics(path)
+
+    weak_signals = (
+        metrics["dominant_share"] >= 0.78,
+        metrics["entropy"] <= 3.2,
+        metrics["edge_share"] <= 0.015,
+        metrics["saturation_mean"] <= 0.08,
+    )
+
+    return sum(weak_signals) >= 2, metrics
+
+
+def asset_sort_key(row: dict[str, str]) -> tuple[int, int, int, int, int, str]:
     asset_type = str(row.get("asset_type") or "").strip()
     source = str(row.get("asset_source") or "").strip()
 
@@ -152,8 +240,9 @@ def select_assets(
     scene_number: int,
     rows: list[dict[str, str]],
     max_assets: int,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     eligible: list[dict[str, str]] = []
+    rejected: list[dict[str, Any]] = []
 
     for row in rows:
         if integer_value(row.get("scene_number"), -1) != scene_number:
@@ -171,6 +260,33 @@ def select_assets(
             continue
 
         if asset_path.stat().st_size == 0:
+            continue
+
+        try:
+            low_information, metrics = is_low_information_visual(asset_path)
+        except Exception as exc:
+            rejected.append(
+                {
+                    "scene_number": scene_number,
+                    "asset_path": str(asset_path),
+                    "reason": f"Could not analyze visual quality: {exc}",
+                    "metrics": None,
+                }
+            )
+            continue
+
+        if low_information:
+            rejected.append(
+                {
+                    "scene_number": scene_number,
+                    "asset_path": str(asset_path),
+                    "reason": "Low-information visual",
+                    "metrics": {
+                        key: round(value, 4)
+                        for key, value in metrics.items()
+                    },
+                }
+            )
             continue
 
         eligible.append(row)
@@ -192,7 +308,7 @@ def select_assets(
         if len(selected) >= max_assets:
             break
 
-    return selected
+    return selected, rejected
 
 
 def copy_asset(
@@ -204,12 +320,7 @@ def copy_asset(
     source_suffix = source_path.suffix.lower()
 
     if source_suffix in RENDER_NATIVE_EXTENSIONS:
-        output_suffix = (
-            ".jpg"
-            if source_suffix == ".jpeg"
-            else source_suffix
-        )
-
+        output_suffix = ".jpg" if source_suffix == ".jpeg" else source_suffix
         target_path = target_dir / f"asset_{index:02d}{output_suffix}"
 
         shutil.copy2(source_path, target_path)
@@ -254,6 +365,7 @@ def copy_asset(
 
     return target_path
 
+
 def create_fallback_asset(
     *,
     target_dir: Path,
@@ -262,26 +374,24 @@ def create_fallback_asset(
     """
     Create a neutral editorial fallback image.
 
-    No text, UI, labels, chart-like lines, logos, icons, or fake event footage.
+    This remains intentionally free of invented event imagery. A later
+    editorial-card stage can add scene title and takeaway text on top.
     """
     target_path = target_dir / "asset_01_fallback.png"
 
-    width = WIDTH
-    height = HEIGHT
-
     image = Image.new(
         "RGB",
-        (width, height),
+        (WIDTH, HEIGHT),
         (31, 43, 55),
     )
 
     pixels = image.load()
 
-    for y in range(height):
-        vertical = y / max(height - 1, 1)
+    for y in range(HEIGHT):
+        vertical = y / max(HEIGHT - 1, 1)
 
-        for x in range(width):
-            horizontal = x / max(width - 1, 1)
+        for x in range(WIDTH):
+            horizontal = x / max(WIDTH - 1, 1)
 
             vignette = abs(horizontal - 0.5) * 28
             horizon = max(0.0, 1.0 - abs(vertical - 0.62) * 3.2)
@@ -308,6 +418,7 @@ def create_fallback_asset(
         )
 
     return target_path
+
 
 def main() -> int:
     args = parse_args()
@@ -342,6 +453,7 @@ def main() -> int:
 
     render_scenes: list[dict[str, Any]] = []
     selection_rows: list[dict[str, Any]] = []
+    rejected_rows: list[dict[str, Any]] = []
 
     ordered_audio_scenes = sorted(
         audio_scenes,
@@ -367,11 +479,13 @@ def main() -> int:
     for audio_scene in ordered_audio_scenes:
         scene_number = int(audio_scene["scene_number"])
 
-        selected = select_assets(
+        selected, rejected = select_assets(
             scene_number=scene_number,
             rows=assets_rows,
             max_assets=args.max_assets_per_scene,
         )
+
+        rejected_rows.extend(rejected)
 
         use_fallback = not selected
 
@@ -396,7 +510,6 @@ def main() -> int:
                 "actual_duration_seconds is invalid for scene "
                 f"{scene_number}: {actual_duration!r}"
             )
-
 
         scene_dir = args.output_dir / f"scene_{scene_number:03d}"
         scene_dir.mkdir(parents=True, exist_ok=True)
@@ -425,10 +538,10 @@ def main() -> int:
                     "asset_type": "generated_fallback",
                     "asset_source": "neutral_abstract_fallback",
                     "asset_url": None,
-                    "width": 2400,
-                    "height": 1350,
+                    "width": WIDTH,
+                    "height": HEIGHT,
                     "fallback_reason": (
-                        "No valid source image or screenshot was collected "
+                        "No valid high-information source image was collected "
                         "for this scene."
                     ),
                 }
@@ -508,6 +621,7 @@ def main() -> int:
             {
                 "run_id": args.run_id,
                 "assets": selection_rows,
+                "rejected_low_information_assets": rejected_rows,
             },
             ensure_ascii=False,
             indent=2,
@@ -524,6 +638,7 @@ def main() -> int:
                 "selected_assets": str(selection_path),
                 "scene_count": len(render_scenes),
                 "asset_count": len(selection_rows),
+                "rejected_low_information_asset_count": len(rejected_rows),
             },
             ensure_ascii=False,
         )
