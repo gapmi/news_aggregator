@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 WIDTH = 2400
@@ -32,6 +32,16 @@ ASSET_SOURCE_PRIORITY = {
     "page_image": 3,
     "viewport_screenshot": 4,
 }
+
+FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+)
+
+REGULAR_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,13 +141,16 @@ def is_true(value: str | None) -> bool:
     }
 
 
+def normalize_text(value: str) -> str:
+    return " ".join(str(value or "").split())
+
+
 def image_quality_metrics(path: Path) -> dict[str, float]:
     """
     Calculate lightweight visual-information metrics on a small image copy.
 
-    The function is intentionally conservative. It does not judge editorial
-    value; it only identifies images that are likely flat, blank, nearly
-    monochrome, or visually empty.
+    This does not decide whether an image is editorially useful. It detects
+    likely empty, flat, monochrome, or visually uninformative frames.
     """
     with Image.open(path) as source:
         image = source.convert("RGB")
@@ -158,6 +171,7 @@ def image_quality_metrics(path: Path) -> dict[str, float]:
             (red // 32, green // 32, blue // 32)
             for red, green, blue in pixels
         ]
+
         color_counts = Counter(quantized)
         dominant_share = max(color_counts.values()) / total
 
@@ -200,10 +214,10 @@ def image_quality_metrics(path: Path) -> dict[str, float]:
 
 def is_low_information_visual(path: Path) -> tuple[bool, dict[str, float]]:
     """
-    Reject a visual only when at least two independent weak signals appear.
+    Reject an image only when at least two independent weak signals appear.
 
-    This avoids rejecting legitimate editorial photos that are dark, simple,
-    low-saturation, or dominated by one color, but still have useful details.
+    This avoids discarding a legitimate photo merely because it is dark,
+    low-saturation, simple, or dominated by one broad color.
     """
     metrics = image_quality_metrics(path)
 
@@ -366,23 +380,168 @@ def copy_asset(
     return target_path
 
 
+def load_font(
+    candidates: tuple[str, ...],
+    size: int,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for candidate in candidates:
+        path = Path(candidate)
+
+        if path.is_file():
+            return ImageFont.truetype(str(path), size=size)
+
+    return ImageFont.load_default()
+
+
+def split_words(
+    text: str,
+    *,
+    max_words: int,
+) -> str:
+    words = normalize_text(text).split()
+
+    if len(words) <= max_words:
+        return " ".join(words)
+
+    return " ".join(words[:max_words]).rstrip(",.;:") + "…"
+
+
+def narration_to_card_text(
+    narration: str,
+) -> tuple[str, str]:
+    """
+    Create a compact card headline and secondary line using only narration.
+
+    No event, statistic, source, or interpretation is invented here.
+    """
+    text = normalize_text(narration)
+
+    if not text:
+        return (
+            "News update",
+            "A news development is being reviewed.",
+        )
+
+    sentences = [
+        sentence.strip()
+        for sentence in (
+            text.replace("!", ".")
+            .replace("?", ".")
+            .split(".")
+        )
+        if sentence.strip()
+    ]
+
+    headline_source = sentences[0] if sentences else text
+
+    detail_source = (
+        sentences[1]
+        if len(sentences) > 1
+        else headline_source
+    )
+
+    headline = split_words(
+        headline_source,
+        max_words=11,
+    )
+
+    detail = split_words(
+        detail_source,
+        max_words=16,
+    )
+
+    return headline, detail
+
+
+def wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    max_width: int,
+) -> list[str]:
+    words = normalize_text(text).split()
+
+    if not words:
+        return []
+
+    lines: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        candidate = " ".join([*current, word])
+
+        left, _, right, _ = draw.textbbox(
+            (0, 0),
+            candidate,
+            font=font,
+        )
+
+        if current and right - left > max_width:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+
+    if current:
+        lines.append(" ".join(current))
+
+    return lines
+
+
+def draw_wrapped_text(
+    draw: ImageDraw.ImageDraw,
+    *,
+    position: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    fill: tuple[int, int, int],
+    max_width: int,
+    line_gap: int,
+) -> int:
+    x, y = position
+
+    for line in wrap_text(
+        draw,
+        text,
+        font,
+        max_width,
+    ):
+        draw.text(
+            (x, y),
+            line,
+            font=font,
+            fill=fill,
+        )
+
+        _, top, _, bottom = draw.textbbox(
+            (x, y),
+            line,
+            font=font,
+        )
+
+        y += (bottom - top) + line_gap
+
+    return y
+
+
 def create_fallback_asset(
     *,
     target_dir: Path,
     scene_number: int,
+    narration: str,
 ) -> Path:
     """
-    Create a neutral editorial fallback image.
+    Create a readable editorial fallback card.
 
-    This remains intentionally free of invented event imagery. A later
-    editorial-card stage can add scene title and takeaway text on top.
+    The card contains only a compact version of the actual scene narration.
+    It deliberately contains no AI-generated event imagery or invented facts.
     """
     target_path = target_dir / "asset_01_fallback.png"
 
     image = Image.new(
         "RGB",
         (WIDTH, HEIGHT),
-        (31, 43, 55),
+        (15, 25, 38),
     )
 
     pixels = image.load()
@@ -393,18 +552,118 @@ def create_fallback_asset(
         for x in range(WIDTH):
             horizontal = x / max(WIDTH - 1, 1)
 
-            vignette = abs(horizontal - 0.5) * 28
-            horizon = max(0.0, 1.0 - abs(vertical - 0.62) * 3.2)
+            center_distance = (
+                (horizontal - 0.38) ** 2
+                + (vertical - 0.42) ** 2
+            ) ** 0.5
 
-            red = int(23 + horizon * 16 - vignette * 0.22)
-            green = int(34 + horizon * 24 - vignette * 0.30)
-            blue = int(48 + horizon * 34 - vignette * 0.42)
+            glow = max(0.0, 1.0 - center_distance * 2.15)
+            vignette = abs(horizontal - 0.5) * 18
+
+            red = int(12 + glow * 18 - vignette * 0.20)
+            green = int(23 + glow * 34 - vignette * 0.32)
+            blue = int(38 + glow * 58 - vignette * 0.45)
 
             pixels[x, y] = (
                 max(0, min(255, red)),
                 max(0, min(255, green)),
                 max(0, min(255, blue)),
             )
+
+    draw = ImageDraw.Draw(image)
+
+    margin_left = 220
+    margin_right = 220
+    content_width = WIDTH - margin_left - margin_right
+
+    label_font = load_font(
+        FONT_CANDIDATES,
+        42,
+    )
+    headline_font = load_font(
+        FONT_CANDIDATES,
+        96,
+    )
+    detail_font = load_font(
+        REGULAR_FONT_CANDIDATES,
+        54,
+    )
+    footer_font = load_font(
+        REGULAR_FONT_CANDIDATES,
+        30,
+    )
+
+    accent_width = 12
+    accent_top = 260
+    accent_bottom = 905
+
+    draw.rounded_rectangle(
+        (
+            margin_left,
+            accent_top,
+            margin_left + accent_width,
+            accent_bottom,
+        ),
+        radius=6,
+        fill=(75, 182, 255),
+    )
+
+    headline, detail = narration_to_card_text(narration)
+
+    text_left = margin_left + 65
+    label_top = 275
+
+    draw.text(
+        (text_left, label_top),
+        "NEWS IN FOCUS",
+        font=label_font,
+        fill=(122, 205, 255),
+    )
+
+    headline_top = label_top + 110
+
+    detail_top = draw_wrapped_text(
+        draw,
+        position=(text_left, headline_top),
+        text=headline,
+        font=headline_font,
+        fill=(246, 249, 252),
+        max_width=content_width - 65,
+        line_gap=24,
+    )
+
+    detail_top += 45
+
+    draw_wrapped_text(
+        draw,
+        position=(text_left, detail_top),
+        text=detail,
+        font=detail_font,
+        fill=(191, 206, 220),
+        max_width=content_width - 65,
+        line_gap=18,
+    )
+
+    footer = f"Scene {scene_number:02d} • News analysis"
+    footer_box_top = HEIGHT - 160
+
+    draw.rounded_rectangle(
+        (
+            margin_left,
+            footer_box_top,
+            WIDTH - margin_right,
+            HEIGHT - 92,
+        ),
+        radius=18,
+        fill=(8, 16, 26),
+    )
+
+    draw.text(
+        (margin_left + 30, footer_box_top + 18),
+        footer,
+        font=footer_font,
+        fill=(151, 177, 199),
+    )
 
     image.save(
         target_path,
@@ -520,6 +779,7 @@ def main() -> int:
             fallback_path = create_fallback_asset(
                 target_dir=scene_dir,
                 scene_number=scene_number,
+                narration=str(audio_scene.get("narration") or ""),
             )
 
             copied_assets.append(str(fallback_path.resolve()))
@@ -535,8 +795,8 @@ def main() -> int:
                     "article_url": None,
                     "candidate_rank": None,
                     "is_representative": None,
-                    "asset_type": "generated_fallback",
-                    "asset_source": "neutral_abstract_fallback",
+                    "asset_type": "generated_editorial_card",
+                    "asset_source": "narration_editorial_card",
                     "asset_url": None,
                     "width": WIDTH,
                     "height": HEIGHT,
