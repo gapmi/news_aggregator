@@ -266,8 +266,8 @@ def create_fallback_asset(
     """
     target_path = target_dir / "asset_01_fallback.png"
 
-    width = 1920
-    height = 1080
+    width = 2400
+    height = 1350
 
     image = Image.new(
         "RGB",
