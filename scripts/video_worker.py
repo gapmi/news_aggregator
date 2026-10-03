@@ -20,7 +20,12 @@ log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKER_LOCK_KEY = 917_244_613
 
-SCHEDULE_HOURS_UTC = {6, 18}
+SCHEDULE_SLOTS_UTC = {
+    (0, 20),
+    (6, 20),
+    (12, 20),
+    (18, 20),
+}
 
 POLL_SECONDS = int(
     os.getenv("VIDEO_WORKER_POLL_SECONDS", "60")
@@ -75,13 +80,10 @@ def release_lock(conn) -> None:
 
 
 def schedule_slot(now: datetime) -> str | None:
-    if now.minute != 0:
+    if (now.hour, now.minute) not in SCHEDULE_SLOTS_UTC:
         return None
 
-    if now.hour not in SCHEDULE_HOURS_UTC:
-        return None
-
-    return now.strftime("%Y-%m-%dT%H:00:00Z")
+    return now.strftime("%Y-%m-%dT%H:%M:00Z")
 
 
 def slot_already_processed(
@@ -360,10 +362,13 @@ def main() -> int:
     )
 
     log.info(
-        "Video worker started: UTC schedule=%s, upload_enabled=%s",
-        sorted(SCHEDULE_HOURS_UTC),
-        UPLOAD_ENABLED,
-    )
+    "Video worker started: UTC schedule=%s, upload_enabled=%s",
+    [
+        f"{hour:02d}:{minute:02d}"
+        for hour, minute in sorted(SCHEDULE_SLOTS_UTC)
+    ],
+    UPLOAD_ENABLED,
+)
 
     last_checked_slot: str | None = None
 
