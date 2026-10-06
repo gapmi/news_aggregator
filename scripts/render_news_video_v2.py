@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-
+from scripts.video_branding import build_branded_sequence
 
 WIDTH = 2400
 HEIGHT = 1350
@@ -376,26 +376,40 @@ def main() -> int:
 
     final_path = render_dir / f"final_{run_id}.mp4"
 
-    concat_final(
+    sequence_paths, branding_report = build_branded_sequence(
         scene_paths=scene_paths,
+        render_dir=render_dir,
+    )
+
+    concat_final(
+        scene_paths=sequence_paths,
         output_path=final_path,
         render_dir=render_dir,
     )
 
+    news_duration = sum(
+        float(scene["actual_duration_seconds"])
+        for scene in manifest["scenes"]
+    )
+    branding_duration = float(
+        branding_report["extra_duration_seconds"]
+    )
+
     expected_duration = round(
-        sum(
-            float(scene["actual_duration_seconds"])
-            for scene in manifest["scenes"]
-        ),
+        news_duration + branding_duration,
         3,
     )
 
     report = {
         "run_id": run_id,
         "expected_duration_seconds": expected_duration,
+        "news_duration_seconds": round(news_duration, 6),
+        "branding_duration_seconds": round(branding_duration, 6),
+        "branding": branding_report,
         "final_video": str(final_path),
         "final_probe": probe(final_path),
         "scene_files": [str(path) for path in scene_paths],
+        "sequence_files": [str(path) for path in sequence_paths],
     }
 
     report_path = render_dir / "render_report_v2.json"
