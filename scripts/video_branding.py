@@ -129,20 +129,31 @@ def extract_boundary_frame(
     output_path: Path,
     last: bool,
 ) -> None:
-    duration = media_duration(video_path)
+    if not video_path.is_file() or video_path.stat().st_size == 0:
+        raise RuntimeError(f"Video missing or empty: {video_path}")
 
-    command = ["ffmpeg", "-y"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if last:
-        timestamp = max(0.0, duration - 1.0 / FPS)
-        command.extend(["-ss", f"{timestamp:.6f}"])
+    if output_path.exists():
+        output_path.unlink()
+
+    command = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-map", "0:v:0",
+        "-an",
+        "-vf", "format=rgb24",
+        "-c:v", "png",
+        "-threads:v", "1",
+        "-fps_mode", "passthrough",
+    ]
+
+    if not last:
+        command.extend(["-frames:v", "1"])
 
     command.extend(
         [
-            "-i", str(video_path),
-            "-map", "0:v:0",
-            "-frames:v", "1",
-            "-q:v", "2",
+            "-f", "image2",
             "-update", "1",
             str(output_path),
         ]
@@ -151,8 +162,10 @@ def extract_boundary_frame(
     run(command)
 
     if not output_path.is_file() or output_path.stat().st_size == 0:
-        raise RuntimeError(f"Boundary frame was not created: {output_path}")
-
+        raise RuntimeError(
+            f"Boundary frame was not created: {output_path}"
+        )
+    
 
 def tempo_filter(speed: float) -> str:
     if not math.isfinite(speed) or speed <= 0:
@@ -186,8 +199,8 @@ def render_transition(
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    previous_frame = work_dir / "previous_last.jpg"
-    next_frame = work_dir / "next_first.jpg"
+    previous_frame = work_dir / "previous_last.png"
+    next_frame = work_dir / "next_first.png"
 
     extract_boundary_frame(
         video_path=previous_scene,
