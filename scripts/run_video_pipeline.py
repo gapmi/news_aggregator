@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -15,6 +16,12 @@ from typing import Any
 import psycopg2.extras
 
 from clustering.offline import get_conn
+
+from scripts.video_branding import (
+    MEDIA_DIR,
+    TRANSITION_SECONDS,
+    media_duration,
+)
 
 
 log = logging.getLogger(__name__)
@@ -152,6 +159,128 @@ def probe_mp4(path: Path) -> dict[str, Any]:
     )
 
     return json.loads(result.stdout)
+
+def load_branding_duration(
+    *,
+    render_dir: Path,
+    run_id: int,
+) -> float | None:
+    """
+    Return added duration only for a matching branded render report.
+
+    Missing, outdated, or malformed reports invalidate cached video reuse.
+    """
+    report_path = render_dir / "render_report_v2.json"
+    final_path = render_dir / f"final_{run_id}.mp4"
+
+    try:
+        if not report_path.is_file() or not final_path.is_file():
+            return None
+
+        if final_path.stat().st_size == 0:
+            return None
+
+        if report_path.stat().st_mtime_ns < final_path.stat().st_mtime_ns:
+            return None
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        if not isinstance(report, dict):
+            return None
+
+        if report.get("run_id") != run_id:
+            return None
+
+        if report.get("final_video") != str(final_path):
+            return None
+
+        branding = report.get("branding")
+        if not isinstance(branding, dict):
+            return None
+
+        if branding.get("enabled") is not True:
+            return None
+
+        scene_files = report.get("scene_files")
+        sequence_files = report.get("sequence_files")
+
+        if not isinstance(scene_files, list) or not scene_files:
+            return None
+
+        if not isinstance(sequence_files, list):
+            return None
+
+        scene_count = len(scene_files)
+        transition_count = scene_count - 1
+
+        if branding.get("transition_count") != transition_count:
+            return None
+
+        if len(sequence_files) != scene_count + transition_count + 2:
+            return None
+
+        intro_seconds = round(
+            media_duration(MEDIA_DIR / "news_intro.wav") * 30
+        ) / 30
+        ending_seconds = round(
+            media_duration(MEDIA_DIR / "news_ending.wav") * 30
+        ) / 30
+
+        expected_extra = (
+            intro_seconds
+            + ending_seconds
+            + transition_count * TRANSITION_SECONDS
+        )
+
+        checks = (
+            (
+                float(branding["intro_duration_seconds"]),
+                intro_seconds,
+            ),
+            (
+                float(branding["ending_duration_seconds"]),
+                ending_seconds,
+            ),
+            (
+                float(branding["transition_duration_seconds"]),
+                TRANSITION_SECONDS,
+            ),
+            (
+                float(branding["extra_duration_seconds"]),
+                expected_extra,
+            ),
+            (
+                float(report["branding_duration_seconds"]),
+                expected_extra,
+            ),
+            (
+                float(report["expected_duration_seconds"]),
+                float(report["news_duration_seconds"]) + expected_extra,
+            ),
+        )
+
+        for actual, expected in checks:
+            if not math.isfinite(actual) or not math.isfinite(expected):
+                return None
+
+            if abs(actual - expected) > 0.01:
+                return None
+
+        return expected_extra
+
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        subprocess.SubprocessError,
+    ) as exc:
+        log.warning(
+            "Cannot reuse branded render for run_id=%s: %s",
+            run_id,
+            exc,
+        )
+        return None
 
 
 def validate_final_video(
@@ -632,6 +761,10 @@ def main() -> int:
             and final_video_path.is_file()
             and final_video_path.stat().st_size > 0
             and not args.force_render
+            and load_branding_duration(
+                render_dir=render_dir,
+                run_id=args.run_id,
+            ) is not None
         ):
             log.info(
                 "Final video already exists for run_id=%s; "
@@ -918,6 +1051,10 @@ def main() -> int:
             args.force_render
             or not final_video_path.is_file()
             or final_video_path.stat().st_size == 0
+            or load_branding_duration(
+                render_dir=render_dir,
+                run_id=args.run_id,
+            ) is None
         ):
             run_command(
                 [
@@ -942,14 +1079,60 @@ def main() -> int:
             patch={"stage": "quality_gate"},
         )
 
+        branding_duration_seconds = load_branding_duration(
+            render_dir=render_dir,
+            run_id=args.run_id,
+        )
+
+        if branding_duration_seconds is None:
+            raise RuntimeError(
+                "Final video has no valid matching branding report"
+            )
+
+        render_report_path = render_dir / "render_report_v2.json"
+        render_report = json.loads(
+            render_report_path.read_text(encoding="utf-8")
+        )
+
+        reported_scene_count = len(render_report["scene_files"])
+        if reported_scene_count != scene_count:
+            raise RuntimeError(
+                "Render report scene count differs from pipeline: "
+                f"report={reported_scene_count}, pipeline={scene_count}"
+            )
+
+        reported_news_duration = float(
+            render_report["news_duration_seconds"]
+        )
+
+        if (
+            not math.isfinite(reported_news_duration)
+            or abs(
+                reported_news_duration - audio_duration_seconds
+            ) > 0.1
+        ):
+            raise RuntimeError(
+                "Render report news duration differs from audio manifest: "
+                f"report={reported_news_duration:.6f}, "
+                f"audio={audio_duration_seconds:.6f}"
+            )
+
+        expected_final_duration_seconds = (
+            audio_duration_seconds + branding_duration_seconds
+        )
+
         final_video_report = validate_final_video(
             final_path=final_video_path,
-            expected_duration_seconds=audio_duration_seconds,
+            expected_duration_seconds=expected_final_duration_seconds,
         )
 
         success_meta = {
             "stage": "rendered",
-            "scene_count": scene_count,
+            "branding_duration_seconds": branding_duration_seconds,
+            "expected_final_duration_seconds": (
+                expected_final_duration_seconds
+            ),
+            "render_report_path": str(render_report_path),
             "scene_manifest_path": str(scene_manifest_path),
             "audio_manifest_path": str(audio_manifest_path),
             "source_assets_manifest_path": str(
