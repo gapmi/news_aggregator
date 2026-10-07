@@ -21,10 +21,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKER_LOCK_KEY = 917_244_613
 
 SCHEDULE_SLOTS_UTC = {
-    (0, 20),
-    (6, 20),
-    (12, 20),
-    (18, 20),
+    (6, 10),
+    (18, 10),
 }
 
 POLL_SECONDS = int(
