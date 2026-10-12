@@ -557,7 +557,7 @@ def validate_mistral_video_script(
                 f"in editorial_topics: {invalid}"
             )
         else:
-            topic = topics[scene.topic_references][0]
+            topic = topics[scene.topic_references[0]]
             sources = _allowed_source_names({
                 "editorial_topics": [topic]
             })
