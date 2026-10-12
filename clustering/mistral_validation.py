@@ -299,6 +299,9 @@ def _normalize_source_text(value: str) -> str:
 
 
 def _source_aliases(source_name: str) -> set[str]:
+    if not isinstance(source_name, str):
+        return set()
+
     normalized = _normalize_source_text(source_name)
 
     if not normalized:
@@ -308,16 +311,27 @@ def _source_aliases(source_name: str) -> set[str]:
     raw_source = source_name.strip().casefold()
 
     if "." in raw_source and " " not in raw_source:
-        hostname = raw_source.split("/", 1).removeprefix("www.")[0]
-        aliases.add(_normalize_source_text(hostname))
+        hostname, _, _ = raw_source.partition("/")
 
-        first_label = _normalize_source_text(
-            hostname.split(".", 1)[0]
-        )
-        if len(first_label) >= 3:
-            aliases.add(first_label)
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
 
-    return {alias for alias in aliases if len(alias) >= 3}
+        normalized_hostname = _normalize_source_text(hostname)
+
+        if normalized_hostname:
+            aliases.add(normalized_hostname)
+
+        first_label, _, _ = hostname.partition(".")
+        normalized_first_label = _normalize_source_text(first_label)
+
+        if len(normalized_first_label) >= 3:
+            aliases.add(normalized_first_label)
+
+    return {
+        alias
+        for alias in aliases
+        if len(alias) >= 3
+    }
 
 
 def _allowed_source_names(
