@@ -16,7 +16,6 @@ from typing import Any
 import psycopg2.extras
 
 from clustering.offline import get_conn
-
 from scripts.video_branding import (
     MEDIA_DIR,
     TRANSITION_SECONDS,
@@ -49,55 +48,49 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--run-id", type=int, required=True)
-
     parser.add_argument(
         "--target-duration-seconds",
         type=int,
         default=DEFAULT_TARGET_DURATION_SECONDS,
     )
-
     parser.add_argument(
         "--max-topics",
         type=int,
         default=DEFAULT_MAX_TOPICS,
     )
-
     parser.add_argument(
         "--headlines-per-topic",
         type=int,
         default=DEFAULT_HEADLINES_PER_TOPIC,
     )
-
     parser.add_argument(
         "--max-assets-per-scene",
         type=int,
         default=DEFAULT_MAX_ASSETS_PER_SCENE,
     )
-
     parser.add_argument(
         "--force-script",
         action="store_true",
-        help="Generate a new Mistral script even if a validated script exists.",
+        help=(
+            "Generate a new Mistral script and regenerate downstream "
+            "audio, assets and video."
+        ),
     )
-
     parser.add_argument(
         "--force-tts",
         action="store_true",
-        help="Regenerate Cartesia WAV files for every scene.",
+        help="Regenerate Cartesia WAV files and final video.",
     )
-
     parser.add_argument(
         "--force-assets",
         action="store_true",
-        help="Regenerate article candidates and recollect visual assets.",
+        help="Regenerate visual assets and final video.",
     )
-
     parser.add_argument(
         "--force-render",
         action="store_true",
-        help="Rebuild render assets and final MP4.",
+        help="Rebuild final MP4.",
     )
-
     parser.add_argument(
         "--skip-render",
         action="store_true",
@@ -113,7 +106,6 @@ def run_command(
     env: dict[str, str] | None = None,
 ) -> None:
     log.info("$ %s", " ".join(command))
-
     subprocess.run(
         command,
         cwd=PROJECT_ROOT,
@@ -128,10 +120,8 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as file:
         while True:
             chunk = file.read(1024 * 1024)
-
             if not chunk:
                 break
-
             digest.update(chunk)
 
     return digest.hexdigest()
@@ -157,19 +147,15 @@ def probe_mp4(path: Path) -> dict[str, Any]:
         capture_output=True,
         text=True,
     )
-
     return json.loads(result.stdout)
+
 
 def load_branding_duration(
     *,
     render_dir: Path,
     run_id: int,
 ) -> float | None:
-    """
-    Return added duration only for a matching branded render report.
-
-    Missing, outdated, or malformed reports invalidate cached video reuse.
-    """
+    """Return added duration only for a matching branded render report."""
     report_path = render_dir / "render_report_v2.json"
     final_path = render_dir / f"final_{run_id}.mp4"
 
@@ -262,7 +248,6 @@ def load_branding_duration(
         for actual, expected in checks:
             if not math.isfinite(actual) or not math.isfinite(expected):
                 return None
-
             if abs(actual - expected) > 0.01:
                 return None
 
@@ -292,14 +277,12 @@ def validate_final_video(
         raise RuntimeError(f"Final video was not created: {final_path}")
 
     size_bytes = final_path.stat().st_size
-
     if size_bytes < 1_000_000:
         raise RuntimeError(
             f"Final MP4 is unexpectedly small: {size_bytes} bytes"
         )
 
     probe = probe_mp4(final_path)
-
     streams = probe.get("streams")
 
     if not isinstance(streams, list):
@@ -307,17 +290,14 @@ def validate_final_video(
 
     video_stream = next(
         (
-            stream
-            for stream in streams
+            stream for stream in streams
             if stream.get("codec_type") == "video"
         ),
         None,
     )
-
     audio_stream = next(
         (
-            stream
-            for stream in streams
+            stream for stream in streams
             if stream.get("codec_type") == "audio"
         ),
         None,
@@ -325,7 +305,6 @@ def validate_final_video(
 
     if video_stream is None:
         raise RuntimeError("Final MP4 has no video stream")
-
     if audio_stream is None:
         raise RuntimeError("Final MP4 has no audio stream")
 
@@ -354,14 +333,19 @@ def validate_final_video(
         )
 
     format_data = probe.get("format")
-
     if not isinstance(format_data, dict):
         raise RuntimeError("ffprobe did not return a format object")
 
     actual_duration = float(format_data.get("duration") or 0.0)
 
-    if actual_duration <= 0:
+    if not math.isfinite(actual_duration) or actual_duration <= 0:
         raise RuntimeError("Final MP4 duration is invalid")
+
+    if (
+        not math.isfinite(expected_duration_seconds)
+        or expected_duration_seconds <= 0
+    ):
+        raise RuntimeError("Expected video duration is invalid")
 
     duration_delta = abs(actual_duration - expected_duration_seconds)
 
@@ -389,7 +373,6 @@ def try_acquire_lock(conn) -> bool:
             (VIDEO_PIPELINE_ADVISORY_LOCK_KEY,),
         )
         row = cur.fetchone()
-
     return bool(row[0])
 
 
@@ -399,7 +382,6 @@ def release_lock(conn) -> None:
             "SELECT pg_advisory_unlock(%s)",
             (VIDEO_PIPELINE_ADVISORY_LOCK_KEY,),
         )
-
     conn.commit()
 
 
@@ -456,7 +438,6 @@ def find_existing_success(
             (run_id,),
         )
         row = cur.fetchone()
-
     return dict(row) if row else None
 
 
@@ -475,6 +456,10 @@ def start_pipeline_record(
         "max_topics": args.max_topics,
         "headlines_per_topic": args.headlines_per_topic,
         "max_assets_per_scene": args.max_assets_per_scene,
+        "force_script": args.force_script,
+        "force_tts": args.force_tts,
+        "force_assets": args.force_assets,
+        "force_render": args.force_render,
         "upload_mode": "none",
     }
 
@@ -487,23 +472,14 @@ def start_pipeline_record(
                 related_run_id,
                 meta
             )
-            VALUES (
-                'video_pipeline',
-                'running',
-                %s,
-                %s
-            )
+            VALUES ('video_pipeline', 'running', %s, %s)
             RETURNING id
             """,
-            (
-                run_id,
-                psycopg2.extras.Json(meta),
-            ),
+            (run_id, psycopg2.extras.Json(meta)),
         )
         row = cur.fetchone()
 
     conn.commit()
-
     return int(row[0])
 
 
@@ -520,12 +496,8 @@ def update_pipeline_meta(
             SET meta = COALESCE(meta, '{}'::jsonb) || %s::jsonb
             WHERE id = %s
             """,
-            (
-                json.dumps(patch),
-                pipeline_run_id,
-            ),
+            (json.dumps(patch), pipeline_run_id),
         )
-
     conn.commit()
 
 
@@ -575,9 +547,7 @@ def write_pipeline_state(
     payload: dict[str, Any],
 ) -> None:
     artifact_root.mkdir(parents=True, exist_ok=True)
-
     path = artifact_root / ".pipeline_state.json"
-
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -602,7 +572,6 @@ def has_valid_mistral_script(
             """,
             (run_id,),
         )
-
         return cur.fetchone() is not None
 
 
@@ -621,10 +590,8 @@ def load_scene_count(scene_manifest_path: Path) -> int:
         )
 
     actual_numbers = [
-        int(scene["scene_number"])
-        for scene in scenes
+        int(scene["scene_number"]) for scene in scenes
     ]
-
     expected_numbers = list(range(1, len(scenes) + 1))
 
     if actual_numbers != expected_numbers:
@@ -646,19 +613,16 @@ def has_valid_tts_output(
 
     if not wav_path.is_file() or wav_path.stat().st_size == 0:
         return False
-
     if not metadata_path.is_file() or metadata_path.stat().st_size == 0:
         return False
 
     try:
-        metadata = json.loads(
-            metadata_path.read_text(encoding="utf-8")
-        )
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         duration = float(metadata["actual_duration_seconds"])
     except Exception:
         return False
 
-    return duration > 0
+    return math.isfinite(duration) and duration > 0
 
 
 def load_audio_duration(audio_manifest_path: Path) -> float:
@@ -670,14 +634,15 @@ def load_audio_duration(audio_manifest_path: Path) -> float:
     data = json.loads(audio_manifest_path.read_text(encoding="utf-8"))
     duration = data.get("total_actual_duration_seconds")
 
-    if not isinstance(duration, (int, float)):
+    if (
+        not isinstance(duration, (int, float))
+        or isinstance(duration, bool)
+        or not math.isfinite(duration)
+        or duration <= 0
+    ):
         raise RuntimeError(
-            "audio_manifest total_actual_duration_seconds is invalid"
-        )
-
-    if duration <= 0:
-        raise RuntimeError(
-            "audio_manifest total_actual_duration_seconds must be positive"
+            "audio_manifest total_actual_duration_seconds "
+            "must be finite and positive"
         )
 
     return float(duration)
@@ -694,46 +659,36 @@ def main() -> int:
 
     if args.run_id < 1:
         raise ValueError("--run-id must be positive")
-
     if args.target_duration_seconds < 60:
-        raise ValueError(
-            "--target-duration-seconds must be at least 60"
-        )
-
+        raise ValueError("--target-duration-seconds must be at least 60")
     if args.max_topics < 1:
         raise ValueError("--max-topics must be at least 1")
-
     if args.headlines_per_topic < 2:
-        raise ValueError(
-            "--headlines-per-topic must be at least 2"
-        )
-
+        raise ValueError("--headlines-per-topic must be at least 2")
     if args.max_assets_per_scene < 1:
-        raise ValueError(
-            "--max-assets-per-scene must be at least 1"
-        )
+        raise ValueError("--max-assets-per-scene must be at least 1")
+
+    if args.force_script:
+        args.force_tts = True
+        args.force_assets = True
+
+    if args.force_tts or args.force_assets:
+        args.force_render = True
 
     started_monotonic = time.monotonic()
 
     artifact_root = ARTIFACTS_ROOT / f"run_{args.run_id}"
-
     script_dir = artifact_root / "script"
     audio_dir = artifact_root / "audio"
     source_assets_dir = artifact_root / "source_assets"
     render_assets_dir = artifact_root / "render_assets"
     render_dir = artifact_root / "render"
 
-    scene_manifest_path = (
-        script_dir / f"scene_manifest_{args.run_id}.json"
-    )
-
+    scene_manifest_path = script_dir / f"scene_manifest_{args.run_id}.json"
     audio_manifest_path = audio_dir / "audio_manifest.json"
-
     candidates_path = source_assets_dir / "candidates.csv"
     collected_assets_manifest_path = source_assets_dir / "manifest.csv"
-
     render_manifest_path = render_assets_dir / "render_manifest.json"
-
     final_video_path = render_dir / f"final_{args.run_id}.mp4"
 
     conn = get_conn()
@@ -748,7 +703,6 @@ def main() -> int:
             return 0
 
         lock_acquired = True
-
         validate_clustering_run(conn, args.run_id)
 
         existing_success = find_existing_success(
@@ -760,6 +714,9 @@ def main() -> int:
             existing_success is not None
             and final_video_path.is_file()
             and final_video_path.stat().st_size > 0
+            and not args.force_script
+            and not args.force_tts
+            and not args.force_assets
             and not args.force_render
             and load_branding_duration(
                 render_dir=render_dir,
@@ -807,28 +764,26 @@ def main() -> int:
             patch={"stage": "mistral"},
         )
 
+        script_generated = False
+
         if (
             args.force_script
-            or not has_valid_mistral_script(
-                conn,
-                run_id=args.run_id,
-            )
+            or not has_valid_mistral_script(conn, run_id=args.run_id)
         ):
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "clustering.mistral_generate",
-                    "--run-id",
-                    str(args.run_id),
-                    "--target-duration-seconds",
-                    str(args.target_duration_seconds),
-                    "--max-topics",
-                    str(args.max_topics),
-                    "--headlines-per-topic",
-                    str(args.headlines_per_topic),
-                ]
-            )
+            run_command([
+                sys.executable,
+                "-m",
+                "clustering.mistral_generate",
+                "--run-id",
+                str(args.run_id),
+                "--target-duration-seconds",
+                str(args.target_duration_seconds),
+                "--max-topics",
+                str(args.max_topics),
+                "--headlines-per-topic",
+                str(args.headlines_per_topic),
+            ])
+            script_generated = True
         else:
             log.info(
                 "Using existing validated Mistral script: run_id=%s",
@@ -841,19 +796,40 @@ def main() -> int:
             patch={"stage": "scene_manifest"},
         )
 
-        run_command(
-            [
-                sys.executable,
-                "-m",
-                "scripts.export_scene_manifest",
-                "--run-id",
-                str(args.run_id),
-                "--output",
-                str(scene_manifest_path),
-            ]
+        previous_scene_manifest_sha256 = (
+            sha256_file(scene_manifest_path)
+            if scene_manifest_path.is_file()
+            else None
         )
 
+        run_command([
+            sys.executable,
+            "-m",
+            "scripts.export_scene_manifest",
+            "--run-id",
+            str(args.run_id),
+            "--output",
+            str(scene_manifest_path),
+        ])
+
         scene_count = load_scene_count(scene_manifest_path)
+        scene_manifest_sha256 = sha256_file(scene_manifest_path)
+        scene_manifest_changed = (
+            previous_scene_manifest_sha256 != scene_manifest_sha256
+        )
+
+        if script_generated or scene_manifest_changed:
+            args.force_tts = True
+            args.force_assets = True
+            args.force_render = True
+
+            log.info(
+                "Invalidating downstream artifacts: run_id=%s "
+                "script_generated=%s scene_manifest_changed=%s",
+                args.run_id,
+                script_generated,
+                scene_manifest_changed,
+            )
 
         update_pipeline_meta(
             conn,
@@ -862,6 +838,12 @@ def main() -> int:
                 "stage": "tts",
                 "scene_count": scene_count,
                 "scene_manifest_path": str(scene_manifest_path),
+                "scene_manifest_sha256": scene_manifest_sha256,
+                "script_generated": script_generated,
+                "scene_manifest_changed": scene_manifest_changed,
+                "effective_force_tts": args.force_tts,
+                "effective_force_assets": args.force_assets,
+                "effective_force_render": args.force_render,
             },
         )
 
@@ -880,35 +862,29 @@ def main() -> int:
                 )
                 continue
 
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "scripts.cartesia_tts_pilot",
-                    "--manifest",
-                    str(scene_manifest_path),
-                    "--scene-number",
-                    str(scene_number),
-                    "--output-dir",
-                    str(audio_dir),
-                ]
-            )
-
-        run_command(
-            [
+            run_command([
                 sys.executable,
                 "-m",
-                "scripts.build_audio_manifest",
-                "--run-id",
-                str(args.run_id),
-                "--audio-dir",
+                "scripts.cartesia_tts_pilot",
+                "--manifest",
+                str(scene_manifest_path),
+                "--scene-number",
+                str(scene_number),
+                "--output-dir",
                 str(audio_dir),
-            ]
-        )
+            ])
 
-        audio_duration_seconds = load_audio_duration(
-            audio_manifest_path
-        )
+        run_command([
+            sys.executable,
+            "-m",
+            "scripts.build_audio_manifest",
+            "--run-id",
+            str(args.run_id),
+            "--audio-dir",
+            str(audio_dir),
+        ])
+
+        audio_duration_seconds = load_audio_duration(audio_manifest_path)
 
         update_pipeline_meta(
             conn,
@@ -921,17 +897,15 @@ def main() -> int:
         )
 
         if args.force_assets or not candidates_path.is_file():
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "scripts.export_scene_asset_candidates",
-                    "--run-id",
-                    str(args.run_id),
-                    "--output-csv",
-                    str(candidates_path),
-                ]
-            )
+            run_command([
+                sys.executable,
+                "-m",
+                "scripts.export_scene_asset_candidates",
+                "--run-id",
+                str(args.run_id),
+                "--output-csv",
+                str(candidates_path),
+            ])
         else:
             log.info(
                 "Using existing asset candidates: run_id=%s",
@@ -977,28 +951,25 @@ def main() -> int:
             shutil.rmtree(render_assets_dir)
             render_assets_dir.mkdir(parents=True, exist_ok=True)
 
-        run_command(
-            [
-                sys.executable,
-                "-m",
-                "scripts.build_render_manifest",
-                "--run-id",
-                str(args.run_id),
-                "--audio-manifest",
-                str(audio_manifest_path),
-                "--assets-manifest",
-                str(collected_assets_manifest_path),
-                "--output-dir",
-                str(render_assets_dir),
-                "--max-assets-per-scene",
-                str(args.max_assets_per_scene),
-            ]
-        )
+        run_command([
+            sys.executable,
+            "-m",
+            "scripts.build_render_manifest",
+            "--run-id",
+            str(args.run_id),
+            "--audio-manifest",
+            str(audio_manifest_path),
+            "--assets-manifest",
+            str(collected_assets_manifest_path),
+            "--output-dir",
+            str(render_assets_dir),
+            "--max-assets-per-scene",
+            str(args.max_assets_per_scene),
+        ])
 
         if not render_manifest_path.is_file():
             raise RuntimeError(
-                "Render manifest was not created: "
-                f"{render_manifest_path}"
+                f"Render manifest was not created: {render_manifest_path}"
             )
 
         if args.skip_render:
@@ -1013,12 +984,10 @@ def main() -> int:
                     "render_manifest_path": str(render_manifest_path),
                     "render_skipped": True,
                     "elapsed_seconds": round(
-                        time.monotonic() - started_monotonic,
-                        3,
+                        time.monotonic() - started_monotonic, 3
                     ),
                 },
             )
-
             write_pipeline_state(
                 artifact_root=artifact_root,
                 payload={
@@ -1029,12 +998,10 @@ def main() -> int:
                     "render_skipped": True,
                 },
             )
-
             log.info(
                 "Video pipeline stopped after render manifest: run_id=%s",
                 args.run_id,
             )
-
             return 0
 
         update_pipeline_meta(
@@ -1056,17 +1023,15 @@ def main() -> int:
                 run_id=args.run_id,
             ) is None
         ):
-            run_command(
-                [
-                    sys.executable,
-                    "-m",
-                    "scripts.render_news_video_v2",
-                    "--manifest",
-                    str(render_manifest_path),
-                    "--output-dir",
-                    str(render_dir),
-                ]
-            )
+            run_command([
+                sys.executable,
+                "-m",
+                "scripts.render_news_video_v2",
+                "--manifest",
+                str(render_manifest_path),
+                "--output-dir",
+                str(render_dir),
+            ])
         else:
             log.info(
                 "Using existing final MP4: run_id=%s",
@@ -1107,9 +1072,7 @@ def main() -> int:
 
         if (
             not math.isfinite(reported_news_duration)
-            or abs(
-                reported_news_duration - audio_duration_seconds
-            ) > 0.1
+            or abs(reported_news_duration - audio_duration_seconds) > 0.1
         ):
             raise RuntimeError(
                 "Render report news duration differs from audio manifest: "
@@ -1128,34 +1091,24 @@ def main() -> int:
 
         success_meta = {
             "stage": "rendered",
+            "scene_manifest_sha256": scene_manifest_sha256,
             "branding_duration_seconds": branding_duration_seconds,
-            "expected_final_duration_seconds": (
-                expected_final_duration_seconds
-            ),
+            "expected_final_duration_seconds": expected_final_duration_seconds,
             "render_report_path": str(render_report_path),
             "scene_manifest_path": str(scene_manifest_path),
             "audio_manifest_path": str(audio_manifest_path),
-            "source_assets_manifest_path": str(
-                collected_assets_manifest_path
-            ),
+            "source_assets_manifest_path": str(collected_assets_manifest_path),
             "render_manifest_path": str(render_manifest_path),
             "final_video_path": str(final_video_path),
-            "final_duration_seconds": (
-                final_video_report["duration_seconds"]
-            ),
-            "duration_delta_seconds": (
-                final_video_report["duration_delta_seconds"]
-            ),
-            "final_video_size_bytes": (
-                final_video_report["size_bytes"]
-            ),
+            "final_duration_seconds": final_video_report["duration_seconds"],
+            "duration_delta_seconds": final_video_report["duration_delta_seconds"],
+            "final_video_size_bytes": final_video_report["size_bytes"],
             "final_video_sha256": final_video_report["sha256"],
             "upload_mode": "none",
             "youtube_video_id": None,
             "youtube_url": None,
             "elapsed_seconds": round(
-                time.monotonic() - started_monotonic,
-                3,
+                time.monotonic() - started_monotonic, 3
             ),
         }
 
@@ -1176,10 +1129,9 @@ def main() -> int:
                 "status": "success",
                 "stage": "rendered",
                 "final_video_path": str(final_video_path),
-                "final_duration_seconds": (
-                    final_video_report["duration_seconds"]
-                ),
+                "final_duration_seconds": final_video_report["duration_seconds"],
                 "final_video_sha256": final_video_report["sha256"],
+                "scene_manifest_sha256": scene_manifest_sha256,
                 "upload_mode": "none",
             },
         )
@@ -1189,19 +1141,14 @@ def main() -> int:
             args.run_id,
             final_video_path,
         )
-
         return 0
 
     except Exception as exc:
-        log.exception(
-            "Video pipeline failed: run_id=%s",
-            args.run_id,
-        )
+        log.exception("Video pipeline failed: run_id=%s", args.run_id)
 
         if pipeline_run_id is not None:
             try:
                 conn.rollback()
-
                 complete_pipeline_record(
                     conn,
                     pipeline_run_id=pipeline_run_id,
@@ -1212,15 +1159,12 @@ def main() -> int:
                         "stage": "failed",
                         "error_type": type(exc).__name__,
                         "elapsed_seconds": round(
-                            time.monotonic() - started_monotonic,
-                            3,
+                            time.monotonic() - started_monotonic, 3
                         ),
                     },
                 )
             except Exception:
-                log.exception(
-                    "Could not write failed pipeline status"
-                )
+                log.exception("Could not write failed pipeline status")
 
         write_pipeline_state(
             artifact_root=artifact_root,
@@ -1233,18 +1177,17 @@ def main() -> int:
                 "error": str(exc),
             },
         )
-
         return 1
 
     finally:
         if lock_acquired:
             try:
+                conn.rollback()
                 release_lock(conn)
             except Exception:
                 log.exception(
                     "Could not release video pipeline advisory lock"
                 )
-
         conn.close()
 
 
