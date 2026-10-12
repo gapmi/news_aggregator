@@ -163,8 +163,8 @@ def _build_word_limit_retry_request(
 
     The existing repair builder supplies the payload, schema, prior JSON,
     validator errors, topic constraints, and normal narration limits. This
-    wrapper adds a non-negotiable instruction to modify only narration in the
-    named scenes and keep every other JSON field unchanged.
+    wrapper limits edits to narration in the named scenes and its derived
+    full_voiceover. All other JSON fields remain unchanged.
     """
     request_body = build_mistral_repair_request(
         input_payload=input_payload,
@@ -184,9 +184,12 @@ def _build_word_limit_retry_request(
         system_message
         + "\n\n"
         + "FINAL WORD-LIMIT RETRY:\n"
-        + "This is the last automatic repair attempt. The only validation "
         + "errors are word-count overflows in the named scenes. Modify only "
-        + "the narration field of those named scenes. Keep every other "
+        + "the narration field of those named scenes and rebuild "
+        + "narration_script.full_voiceover from the final scene narrations "
+        + "in ascending scene_number order, joined by exactly one space. "
+        + "Do not independently rewrite or summarize full_voiceover. "
+        + "Keep every other "
         + "field, including scene_number, duration_seconds, visual_type, "
         + "visual_prompt, topic_references, video_metadata, coverage_summary, "
         + "and fact_check_notes, exactly unchanged from "
@@ -295,6 +298,8 @@ def parse_and_save_script(
 def main() -> int:
     args = parse_args()
     conn = get_conn()
+    input_payload: dict[str, Any] | None = None
+    request_body: dict[str, Any] | None = None
 
     try:
         input_payload = build_mistral_video_payload(
@@ -499,8 +504,8 @@ def main() -> int:
         save_mistral_failure(
             conn,
             run_id=args.run_id,
-            request_body=None,
-            input_payload=None,
+            request_body=request_body,
+            input_payload=input_payload,
             result=None,
             status="api_failed",
             validation_errors=[str(exc)],
