@@ -294,6 +294,20 @@ policy as the main generation request.
         "\n\n" + repair_instructions
     )
 
+    topic_sources = [
+        {
+            "topic_reference": topic["topic_reference"],
+            "allowed_source_names": sorted({
+                article["source_name"]
+                for article in topic.get("evidence_articles") or []
+                if isinstance(article, dict)
+                and isinstance(article.get("source_name"), str)
+                and article["source_name"].strip()
+            }),
+        }
+        for topic in payload["editorial_topics"]
+    ]
+
     request["messages"].append({
         "role": "user",
         "content": "\n\n".join([
@@ -303,6 +317,17 @@ policy as the main generation request.
             invalid_raw_content.strip(),
             "VALIDATION_ERRORS:",
             _json_for_prompt(validation_errors),
+            "REQUIRED_PUBLISHER_ATTRIBUTION_BY_TOPIC:",
+            _json_for_prompt(topic_sources),
+            (
+                "Every scene must name a publisher allowed for its own topic. "
+                "Keep each factual detail attributed to the source that "
+                "supplied it. Write complete factual narration first; "
+                "choose a compatible duration from 8 to 30 seconds. "
+                "The requested minimum is not an exact total. "
+                "Do not keep an eight-second duration when the narration "
+                "requires more time. Do not add facts to reach 20 words."
+            ),
             "PRIOR_SCENE_WORD_BUDGETS:",
             _json_for_prompt(
                 _get_scene_narration_requirements(invalid_raw_content)

@@ -59,7 +59,12 @@ EVIDENCE AND FACTUAL RULES:
    reports. Do not silently invent an explanation for their difference.
 10. Preserve allegations, forecasts, proposals and uncertainty as such.
 11. Name the source of claims using its supplied source_name. Distinguish
-    the reporting outlet from the actor who made a decision or filed charges.
+     the reporting outlet from the actor who made a decision or filed charges.
+    Every scene must explicitly name at least one publisher supplied in that
+    scene's evidence_articles. A government body or event participant is not
+    a substitute for the publisher unless it is itself a supplied source.
+    A regional suffix after " — " may be omitted from the publisher name.
+    Keep each detail attributed to the source that actually supplied it.
 12. Attribute single-source details to that source. Do not claim independent
     corroboration merely because multiple outlets are listed.
 13. Do not merge distinct events merely because they share an entity or topic.
@@ -111,6 +116,13 @@ TIMING RULES:
 4. estimated_duration_seconds must equal the sum of scene durations.
 5. Scene durations are estimates. Actual speech duration is measured later.
 6. Choose durations compatible with narration length and the output contract.
+7. Do not try to make the total duration equal to the requested minimum.
+   With eight stories, a total above 60 seconds is expected and allowed.
+8. Write the factual, attributed narration first, then select a compatible
+   duration. Do not default every scene to eight seconds.
+9. If narration exceeds a scene's word budget, increase that scene's duration
+   within the allowed range before removing material source-grounded details.
+   Remove repetition and filler rather than adding unsupported content.
 
 VISUAL RULES:
 
@@ -148,8 +160,10 @@ OUTPUT RULES:
    Do not repeat its monitoring categories in narration.
 6. fact_check_notes must describe actual evidence limitations, ambiguities
    or disagreements, not generic assurances of correctness.
-7. If no material issue is identifiable, state that no material disagreement
-   is apparent in the supplied excerpts; do not claim external verification.
+7. fact_check_notes must not assert that missing details are known.
+   Record concrete input limitations when present, such as absent event dates,
+   truncated excerpts or different reported stages. Do not manufacture a
+   disagreement or add generic assurances of verification.
 
 OUTPUT_CONTRACT:
 

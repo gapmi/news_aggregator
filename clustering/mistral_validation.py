@@ -310,6 +310,12 @@ def _source_aliases(source_name: str) -> set[str]:
     aliases = {normalized}
     raw_source = source_name.strip().casefold()
 
+    if " — " in source_name:
+        publisher, _, _ = source_name.partition(" — ")
+        publisher_alias = _normalize_source_text(publisher)
+        if len(publisher_alias) >= 3:
+            aliases.add(publisher_alias)
+
     if "." in raw_source and " " not in raw_source:
         hostname, _, _ = raw_source.partition("/")
 
