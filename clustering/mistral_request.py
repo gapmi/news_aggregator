@@ -79,29 +79,65 @@ EVIDENCE AND FACTUAL RULES:
 
 NARRATION AND STORY RULES:
 
-1. Write English only, in a calm professional broadcast-news tone.
+1. Write English only, in natural spoken American English.
+   Use a calm, approachable newsroom tone: professional but not stiff,
+   conversational but not casual or opinionated.
 2. Use third person. Do not address the viewer or speak as the model.
 3. Lead scene 1 with the strongest supported news development.
-4. Order stories coherently; related stories should be adjacent when feasible.
-   Adjacency does not establish a factual connection between them.
+4. Order stories coherently. Keep related stories adjacent when feasible;
+   do not interrupt a related group with an unrelated story.
+   Adjacency does not establish a factual connection between stories.
 5. Create exactly one scene for each editorial topic.
 6. Every scene must contain exactly one topic_reference.
 7. Each editorial topic_reference must occur in exactly one scene.
 8. Do not add standalone introductions, conclusions, transitions or recaps.
+   Natural transitions within a scene are allowed when they clarify
+   the relationship between supported facts.
 9. Every scene must contain a concrete attributed development.
-10. Every sentence must add a fact, necessary context or material uncertainty.
-11. Do not repeat the same fact across scenes.
-12. Each narration must contain at least {MIN_SCENE_WORDS} words.
-13. Each narration must contain no more than {MAX_WORDS_PER_SECOND} words
+10. Make each scene a compact, connected story rather than a mechanical
+    list of facts. Where the evidence allows:
+    - open with what happened or changed;
+    - develop the story with one or two material details;
+    - explain a supported point of context, contrast or uncertainty.
+    Do not force this structure when the evidence is too limited.
+11. Every sentence must contribute a supported fact, necessary context,
+    a clear explanation of supplied facts or material uncertainty.
+    An explanation must not introduce an unsupported cause, consequence,
+    motive, forecast or claim of significance.
+12. Prefer plain language, active constructions and varied sentence lengths.
+    Avoid bureaucratic wording, stacked clauses and repetitive attribution
+    formulas. Integrate publisher attribution naturally while keeping
+    the source of each claim clear.
+13. Use concrete details to make the story engaging. Do not add rhetorical
+    questions, jokes, dramatic hooks, emotional commentary or generic
+    statements such as "this highlights the importance of" or
+    "the situation remains complex."
+14. Do not repeat the same fact across scenes.
+15. Each narration must contain at least {MIN_SCENE_WORDS} words.
+16. When the supplied evidence is sufficiently rich, aim for roughly
+    40 to 65 words across three to five connected sentences.
+    This is a stylistic target, not a mandatory minimum.
+    Use fewer words when evidence is limited, while respecting the
+    required minimum. Never add filler to reach the target.
+17. Each narration must contain no more than {MAX_WORDS_PER_SECOND} words
     per assigned second. A 15-second scene allows at most 42 words.
-14. Do not impose a minimum speaking rate or pad narration to fill a scene.
-15. Use supplied facts rather than generic language to meet word requirements.
-16. No Markdown, URLs, citation markers, placeholders or production notes
+    The hard word budget takes priority over the stylistic target.
+18. Do not impose a minimum speaking rate or pad narration to fill a scene.
+    Write the supported story first, then assign a compatible duration.
+19. Use supplied facts rather than generic language to meet word requirements.
+    If context is unavailable, do not manufacture it.
+20. Vary openings and sentence structure across scenes.
+    Do not begin every story with a publisher name followed by "reported."
+    Do not use the same closing formula for every story.
+21. Preserve the precision and uncertainty of the source material.
+    A warmer delivery must not make allegations sound proven,
+    proposals sound adopted or forecasts sound certain.
+22. No Markdown, URLs, citation markers, placeholders or production notes
     inside narration.
-17. full_voiceover must equal the scene narrations in ascending scene_number
+23. full_voiceover must equal the scene narrations in ascending scene_number
     order joined with one space. The application also derives this field
     from the final scenes.
-18. Never claim that the script is fact-checked merely because it follows
+24. Never claim that the script is fact-checked merely because it follows
     the input or passes structural validation.
 
 TIMING RULES:

@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 
-NARRATION_POLICY_VERSION = "1.0"
+NARRATION_POLICY_VERSION = "1.1"
 
 
 _RULES: tuple[tuple[str, str], ...] = (
@@ -67,15 +67,22 @@ _RULES: tuple[tuple[str, str], ...] = (
     ),
     (
         "N10",
-        "Prefer direct verbs and clear subjects. Use ordinary spoken "
-        "American English without bureaucratic wording, promotional "
-        "language or inflated adjectives.",
+        "Use a calm, approachable newsroom voice: professional but not "
+        "stiff, conversational but not casual or opinionated. Prefer "
+        "direct verbs, clear subjects and ordinary spoken American "
+        "English. Avoid bureaucratic wording, promotional language "
+        "and inflated adjectives. Integrate source attribution "
+        "naturally without making every sentence sound like a report "
+        "about reporting.",
     ),
     (
         "N11",
-        "Let sentence length and openings vary naturally with the facts. "
-        "Do not force identical sentence templates across stories "
-        "or variation for its own sake.",
+        "Build each story as a connected spoken passage rather than "
+        "a list of isolated facts. Let sentence lengths and openings "
+        "vary naturally. Use brief transitions when they clarify a "
+        "supported relationship, contrast or uncertainty. Do not "
+        "force identical templates across stories or add transitions "
+        "that imply an unsupported connection.",
     ),
     (
         "N12",
@@ -98,9 +105,12 @@ _RULES: tuple[tuple[str, str], ...] = (
     ),
     (
         "N15",
-        "Every sentence must add a distinct fact, necessary context "
-        "or material uncertainty. Do not repeat facts, summarize the "
-        "same story again or add filler to meet a duration target.",
+        "Every sentence must contribute a supported fact, necessary "
+        "context, a clear explanation of supplied facts or material "
+        "uncertainty. An explanation may clarify a fact already stated "
+        "but must not merely repeat it or introduce an unsupported "
+        "cause, consequence, motive, forecast or claim of significance. "
+        "Do not add filler to meet a word or duration target.",
     ),
     (
         "N16",
@@ -145,6 +155,24 @@ _RULES: tuple[tuple[str, str], ...] = (
         "Do not complete truncated source sentences by guessing. "
         "Use only complete supported claims. Do not adopt a source's "
         "loaded labels or opinions as neutral narrator statements.",
+    ),
+        (
+        "N23",
+        "When evidence allows, give each story a compact narrative arc: "
+        "the concrete development, material supporting details and "
+        "a useful point of supported context, contrast or uncertainty. "
+        "Do not force all three elements when evidence is limited. "
+        "Make the story understandable through concrete details, "
+        "not generic claims about why it matters.",
+    ),
+    (
+        "N24",
+        "During repair or shortening, preserve the connected flow "
+        "and natural spoken delivery as well as factual accuracy "
+        "and attribution. Remove repetition and awkward phrasing "
+        "before dropping material supported details. Do not reduce "
+        "a sufficiently evidenced story to a bare headline unless "
+        "a hard output constraint requires it.",
     ),
 )
 
