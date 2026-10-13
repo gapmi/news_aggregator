@@ -331,51 +331,68 @@ def copy_asset(
     target_dir: Path,
     index: int,
 ) -> Path:
-    source_suffix = source_path.suffix.lower()
+    """
+    Decode the source image and save a real PNG for the renderer.
 
-    if source_suffix in RENDER_NATIVE_EXTENSIONS:
-        output_suffix = ".jpg" if source_suffix == ".jpeg" else source_suffix
-        target_path = target_dir / f"asset_{index:02d}{output_suffix}"
+    Never trust the source filename extension. Animated sources use
+    their first frame. Transparent pixels are flattened onto black.
+    """
+    from PIL import ImageOps
 
-        shutil.copy2(source_path, target_path)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    else:
-        target_path = target_dir / f"asset_{index:02d}.png"
+    target_path = target_dir / f"asset_{index:02d}.png"
+    temporary_path = target_dir / f".asset_{index:02d}.tmp.png"
 
-        try:
-            with Image.open(source_path) as image:
-                if image.mode in {"RGBA", "LA"}:
-                    background = Image.new(
-                        "RGB",
-                        image.size,
-                        (0, 0, 0),
-                    )
-                    alpha = image.getchannel("A")
-                    background.paste(
-                        image,
-                        mask=alpha,
-                    )
-                    image = background
-                else:
-                    image = image.convert("RGB")
+    try:
+        with Image.open(source_path) as source:
+            source.seek(0)
+            source.load()
 
-                image.save(
-                    target_path,
-                    format="PNG",
-                    optimize=True,
+            image = ImageOps.exif_transpose(source)
+
+            if (
+                image.mode in {"RGBA", "LA"}
+                or "transparency" in image.info
+            ):
+                rgba = image.convert("RGBA")
+                background = Image.new(
+                    "RGB",
+                    rgba.size,
+                    (0, 0, 0),
                 )
+                background.paste(
+                    rgba,
+                    mask=rgba.getchannel("A"),
+                )
+                normalized = background
+            else:
+                normalized = image.convert("RGB")
 
-        except Exception as exc:
-            raise RuntimeError(
-                "Could not normalize renderer asset: "
-                f"{source_path} → {target_path}: {exc}"
-            ) from exc
+            normalized.save(
+                temporary_path,
+                format="PNG",
+                optimize=True,
+            )
 
-    if not target_path.is_file() or target_path.stat().st_size == 0:
+        with Image.open(temporary_path) as check:
+            if check.format != "PNG":
+                raise RuntimeError(
+                    f"Unexpected output format: {check.format}"
+                )
+            check.verify()
+
+        if temporary_path.stat().st_size == 0:
+            raise RuntimeError("Normalized image is empty")
+
+        temporary_path.replace(target_path)
+
+    except Exception as exc:
+        temporary_path.unlink(missing_ok=True)
         raise RuntimeError(
-            "Could not create selected renderer asset: "
-            f"{source_path} → {target_path}"
-        )
+            "Could not normalize renderer asset: "
+            f"{source_path} → {target_path}: {exc}"
+        ) from exc
 
     return target_path
 
