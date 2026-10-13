@@ -47,6 +47,52 @@ def main() -> int:
         "scenes": items,
     }
 
+    if not items:
+        raise SystemExit("No scene TTS metadata files were found")
+
+    transcript_sections = [
+        f"Run {args.run_id} — narration by scene"
+    ]
+    full_voiceover_parts = []
+
+    for item in items:
+        if item.get("run_id") != args.run_id:
+            raise SystemExit(
+                "TTS metadata run_id mismatch for scene "
+                f"{item.get('scene_number')}: "
+                f"{item.get('run_id')!r}"
+            )
+
+        narration = item.get("narration")
+
+        if not isinstance(narration, str) or not narration.strip():
+            raise SystemExit(
+                "Missing narration for scene "
+                f"{item.get('scene_number')}"
+            )
+
+        transcript_sections.append(
+            f"Scene {item['scene_number']:03d}\n"
+            f"Audio: {item['audio_file']}\n\n"
+            f"{narration}"
+        )
+        full_voiceover_parts.append(narration)
+
+    transcript_path = args.audio_dir / "narration_by_scene.txt"
+    full_voiceover_path = args.audio_dir / "full_voiceover.txt"
+
+    transcript_path.write_text(
+        "\n\n".join(transcript_sections) + "\n",
+        encoding="utf-8",
+    )
+    full_voiceover_path.write_text(
+        " ".join(full_voiceover_parts),
+        encoding="utf-8",
+    )
+
+    output["narration_by_scene_file"] = transcript_path.name
+    output["full_voiceover_file"] = full_voiceover_path.name
+
     output_path = args.audio_dir / "audio_manifest.json"
     output_path.write_text(
         json.dumps(output, ensure_ascii=False, indent=2) + "\n",
