@@ -19,6 +19,7 @@ MAX_VIDEO_DURATION_SECONDS = 600
 MIN_SCENE_DURATION_SECONDS = 8
 MAX_SCENE_DURATION_SECONDS = 30
 MIN_SCENE_WORDS = 20
+MAX_SCENE_WORDS = 110
 MAX_WORDS_PER_SECOND = 2.8
 
 REQUIRED_VISUAL_PROMPT_SUFFIX = (
@@ -115,13 +116,15 @@ NARRATION AND STORY RULES:
 14. Do not repeat the same fact across scenes.
 15. Each narration must contain at least {MIN_SCENE_WORDS} words.
 16. When the supplied evidence is sufficiently rich, aim for roughly
-    40 to 65 words across three to five connected sentences.
-    This is a stylistic target, not a mandatory minimum.
+    55 to 85 words across three to five connected sentences.
+    A detail-rich story may use up to {MAX_SCENE_WORDS} words.
+    These are stylistic targets, not mandatory minimums.
     Use fewer words when evidence is limited, while respecting the
-    required minimum. Never add filler to reach the target.
-17. Each narration must contain no more than {MAX_WORDS_PER_SECOND} words
-    per assigned second. A 15-second scene allows at most 42 words.
-    The hard word budget takes priority over the stylistic target.
+    required minimum. Never add filler to reach a target.
+17. Each narration must contain no more than {MAX_SCENE_WORDS} words
+    and no more than {MAX_WORDS_PER_SECOND} words per assigned second.
+    Both limits apply. A 15-second scene allows at most 42 words.
+    The hard word limits take priority over stylistic targets.
 18. Do not impose a minimum speaking rate or pad narration to fill a scene.
     Write the supported story first, then assign a compatible duration.
 19. Use supplied facts rather than generic language to meet word requirements.
@@ -155,7 +158,13 @@ TIMING RULES:
 7. Do not try to make the total duration equal to the requested minimum.
    With eight stories, a total above 60 seconds is expected and allowed.
 8. Write the factual, attributed narration first, then select a compatible
-   duration. Do not default every scene to eight seconds.
+   duration. Use about 2.3 words per second as a planning guide:
+   divide the narration word count by 2.3 and round up to an integer,
+   then respect the allowed scene-duration range.
+   A typical sufficiently evidenced story may need 25 to 40 seconds.
+   Short evidence-limited stories may be shorter.
+   Do not default every scene to the minimum duration.
+   The planning guide is not a measured TTS duration.
 9. If narration exceeds a scene's word budget, increase that scene's duration
    within the allowed range before removing material source-grounded details.
    Remove repetition and filler rather than adding unsupported content.

@@ -9,13 +9,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
-MIN_SCENE_DURATION_SECONDS = 8
-MAX_SCENE_DURATION_SECONDS = 30
+MIN_SCENE_DURATION_SECONDS = 12
+MAX_SCENE_DURATION_SECONDS = 50
 
 MIN_VIDEO_DURATION_SECONDS = 60
 MAX_VIDEO_DURATION_SECONDS = 600
 
 MIN_SCENE_WORDS = 20
+MAX_SCENE_WORDS = 110
 MAX_WORDS_PER_SECOND = 2.8
 
 REQUIRED_VISUAL_PROMPT_SUFFIX = (
@@ -246,9 +247,11 @@ def _find_pattern_matches(
 
 
 def _scene_word_bounds(duration_seconds: int) -> tuple[int, int]:
-    return MIN_SCENE_WORDS, round(
-        duration_seconds * MAX_WORDS_PER_SECOND
+    maximum = min(
+        MAX_SCENE_WORDS,
+        round(duration_seconds * MAX_WORDS_PER_SECOND),
     )
+    return MIN_SCENE_WORDS, maximum
 
 
 def _topics_by_reference(
