@@ -8,6 +8,7 @@ from typing import Any
 from clustering.mistral_request import build_mistral_request
 from clustering.mistral_validation import (
     MAX_SCENE_DURATION_SECONDS,
+    MAX_SCENE_WORDS,
     MAX_WORDS_PER_SECOND,
     MIN_SCENE_DURATION_SECONDS,
     MIN_SCENE_WORDS,
@@ -148,8 +149,9 @@ def _get_scene_narration_requirements(
             "scene_number": number,
             "prior_duration_seconds": duration,
             "minimum_words": MIN_SCENE_WORDS,
-            "maximum_words_at_prior_duration": round(
-                duration * MAX_WORDS_PER_SECOND
+            "maximum_words_at_prior_duration": min(
+                MAX_SCENE_WORDS,
+                round(duration * MAX_WORDS_PER_SECOND),
             ),
         })
 
@@ -273,10 +275,12 @@ policy as the main generation request.
 7. Do not add standalone introductions, conclusions or transition scenes.
 8. The narration minimum is {MIN_SCENE_WORDS} words per scene.
    There is no minimum words-per-second requirement.
-9. The maximum is round(duration_seconds * {MAX_WORDS_PER_SECOND}) words
-   per scene, using the final duration. Keep wording comfortably below it.
-10. Prior scene budgets are guidance only. When a duration changes or scenes
-    are merged, recompute budgets using the final scenes.
+9. The maximum is min({MAX_SCENE_WORDS},
+   round(duration_seconds * {MAX_WORDS_PER_SECOND})) words per scene,
+   using the final duration. Both limits apply.
+10. Prior scene budgets are guidance only. When a duration changes,
+    recompute its budget using the final duration. Keep exactly one
+    scene per allowed editorial topic; do not merge separate topics.
 11. Do not impose a total word budget based on the requested minimum duration.
     The total maximum depends on the final sum of scene durations.
 12. Keep durations within the main contract. Do not change timing merely
@@ -288,6 +292,19 @@ policy as the main generation request.
     structure without inventing missing facts.
 15. Apply all main factual and visual restrictions during repair.
 16. Do not claim external verification or guaranteed factual correctness.
+17. Make the smallest changes needed to correct the listed errors
+    and any unsupported claims identified from the supplied evidence.
+    Do not rewrite or shorten otherwise valid scenes merely because
+    another scene failed validation.
+18. For a word-budget error, first increase the affected scene's duration
+    within the allowed range and total video-duration limit.
+    Shorten narration only when necessary, preserving material facts,
+    attribution and connected spoken delivery.
+19. For an attribution error, use an exact allowed publisher name
+    supplied for that topic, retaining its original spelling.
+    Do not translate it or replace it with an inferred publisher.
+    Correct the attribution without unnecessarily shortening the story.
+    A publisher name does not make unsupported claims valid.
 """.strip()
 
     request["messages"][0]["content"] += (
@@ -321,12 +338,22 @@ policy as the main generation request.
             _json_for_prompt(topic_sources),
             (
                 "Every scene must name a publisher allowed for its own topic. "
-                "Keep each factual detail attributed to the source that "
-                "supplied it. Write complete factual narration first; "
-                "choose a compatible duration from 8 to 30 seconds. "
+                "Use an exact name from "
+                "REQUIRED_PUBLISHER_ATTRIBUTION_BY_TOPIC, retaining its "
+                "original spelling. Keep each factual detail attributed "
+                "to the source that supplied it. "
+                "Write complete factual narration first; "
+                f"choose a compatible duration from "
+                f"{MIN_SCENE_DURATION_SECONDS} to "
+                f"{MAX_SCENE_DURATION_SECONDS} seconds. "
+                "Use about 2.3 words per second as a planning guide. "
+                f"Each scene must contain at most {MAX_SCENE_WORDS} words "
+                "and must also satisfy its duration-based word budget. "
                 "The requested minimum is not an exact total. "
-                "Do not keep an eight-second duration when the narration "
-                "requires more time. Do not add facts to reach 20 words."
+                "Increase the affected scene's duration before removing "
+                "material supported details when the limits allow it. "
+                f"Do not add facts or filler to reach "
+                f"{MIN_SCENE_WORDS} words."
             ),
             "PRIOR_SCENE_WORD_BUDGETS:",
             _json_for_prompt(
