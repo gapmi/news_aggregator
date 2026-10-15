@@ -325,6 +325,8 @@ policy as the main generation request.
         for topic in payload["editorial_topics"]
     ]
 
+    #test str
+
     request["messages"].append({
         "role": "user",
         "content": "\n\n".join([
