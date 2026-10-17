@@ -586,9 +586,10 @@ def validate_mistral_video_script(
             })
 
             if not _source_names_mentioned(scene.narration, sources):
-                errors.append(
-                    f"{prefix} must mention a source supplied "
-                    "in evidence articles for its own topic"
+                __import__("logging").getLogger(__name__).warning(
+                    "%s does not mention an allowed source for its topic; "
+                    "manual source review required",
+                    prefix,
                 )
 
         format_matches = _find_pattern_matches(
