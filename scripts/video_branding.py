@@ -284,21 +284,18 @@ def build_branded_sequence(
     branding_dir = render_dir / "branding"
     branding_dir.mkdir(parents=True, exist_ok=True)
 
-    intro_path = branding_dir / "intro.mp4"
     ending_path = branding_dir / "ending.mp4"
 
-    intro_seconds = render_brand_clip(
-        video_path=video_path,
-        audio_path=intro_audio,
-        output_path=intro_path,
-    )
+    # Intro is disabled so the video hooks the viewer instantly on scene 001.
+    intro_seconds = 0.0
+
     ending_seconds = render_brand_clip(
         video_path=video_path,
         audio_path=ending_audio,
         output_path=ending_path,
     )
 
-    sequence = [intro_path]
+    sequence: list[Path] = []
     transition_paths: list[Path] = []
 
     for index, scene_path in enumerate(scene_paths):
@@ -334,12 +331,12 @@ def build_branded_sequence(
 
     report: dict[str, object] = {
         "enabled": True,
-        "intro_duration_seconds": intro_seconds,
+        "intro_duration_seconds": 0.0,
         "ending_duration_seconds": ending_seconds,
         "transition_duration_seconds": TRANSITION_SECONDS,
         "transition_count": len(transition_paths),
         "extra_duration_seconds": round(extra_seconds, 6),
-        "intro_file": str(intro_path),
+        "intro_file": None,
         "ending_file": str(ending_path),
         "transition_files": [str(path) for path in transition_paths],
         "sequence_files": [str(path) for path in sequence],

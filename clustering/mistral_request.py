@@ -77,8 +77,15 @@ EVIDENCE AND FACTUAL RULES:
     contain complete claims followed by an unusable fragment.
 16. Treat loaded descriptions as source language, not neutral narrator facts.
 17. Do not fetch URLs or claim to have read material outside INPUT_JSON.
-18. Do not narrate publication-volume changes, monitoring visibility,
-    transition types, article totals or internal analysis metrics.
+18. NEVER mention publication volume changes, coverage statistics, or monitoring metrics.
+    FORBIDDEN PHRASES (do not use these or any variations in voiceover):
+    - "coverage in monitored publications rose/declined/remained stable"
+    - "coverage rose by X percent"
+    - "during the period"
+    - "this topic was newly visible"
+    - "in monitored publications"
+    - "according to monitored media"
+    Focus 100% on the real-world events, the people involved, and the facts reported.
 
 NARRATION AND STORY RULES:
 

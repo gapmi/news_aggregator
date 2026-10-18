@@ -202,19 +202,16 @@ def load_branding_duration(
         if branding.get("transition_count") != transition_count:
             return None
 
-        if len(sequence_files) != scene_count + transition_count + 2:
+        if len(sequence_files) != scene_count + transition_count + 1:
             return None
 
-        intro_seconds = round(
-            media_duration(MEDIA_DIR / "news_intro.wav") * 30
-        ) / 30
+        intro_seconds = 0.0
         ending_seconds = round(
             media_duration(MEDIA_DIR / "news_ending.wav") * 30
         ) / 30
 
         expected_extra = (
-            intro_seconds
-            + ending_seconds
+            ending_seconds
             + transition_count * TRANSITION_SECONDS
         )
 
