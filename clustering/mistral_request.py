@@ -9,7 +9,7 @@ from clustering.narration_policy import (
 )
 
 
-DEFAULT_MISTRAL_MODEL = "mistral-large-latest"
+DEFAULT_MISTRAL_MODEL = "mistral-large-2512"
 DEFAULT_TEMPERATURE = 0.1
 DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_TOKENS = 4096
