@@ -239,6 +239,75 @@ def mux_audio(
     run(command)
 
 
+def write_scene_subtitles(
+    *,
+    narration: str,
+    duration: float,
+    output_path: Path,
+) -> Path:
+    words = narration.split()
+
+    if not words:
+        raise ValueError("Cannot create subtitles from empty narration")
+
+    if not 0 < duration < float("inf"):
+        raise ValueError("Subtitle duration must be finite and positive")
+
+    # The timing is approximate: no word timestamps are available.
+    words_per_caption = 10
+    captions = [
+        words[index:index + words_per_caption]
+        for index in range(0, len(words), words_per_caption)
+    ]
+
+    total_ms = round(duration * 1000)
+
+    if total_ms < len(captions):
+        raise ValueError("Scene is too short for subtitle intervals")
+
+    def timestamp(milliseconds: int) -> str:
+        seconds, milliseconds = divmod(milliseconds, 1000)
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return (
+            f"{hours:02d}:{minutes:02d}:{seconds:02d},"
+            f"{milliseconds:03d}"
+        )
+
+    sections: list[str] = []
+    consumed_words = 0
+    start_ms = 0
+
+    for number, caption_words in enumerate(captions, start=1):
+        consumed_words += len(caption_words)
+        end_ms = round(total_ms * consumed_words / len(words))
+
+        # Keep every word; split each caption into at most two lines.
+        midpoint = (len(caption_words) + 1) // 2
+        lines = [" ".join(caption_words[:midpoint])]
+
+        if midpoint < len(caption_words):
+            lines.append(" ".join(caption_words[midpoint:]))
+
+        caption_text = "\n".join(lines)
+
+        sections.append(
+            f"{number}\n"
+            f"{timestamp(start_ms)} --> {timestamp(end_ms)}\n"
+            f"{caption_text}"
+        )
+
+        start_ms = end_ms
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "\n\n".join(sections) + "\n",
+        encoding="utf-8",
+    )
+
+    return output_path
+
+
 def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
     scene_number = int(scene["scene_number"])
     total_duration = float(scene["actual_duration_seconds"])
