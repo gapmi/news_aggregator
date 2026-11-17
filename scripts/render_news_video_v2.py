@@ -198,7 +198,32 @@ def mux_audio(
     video_path: Path,
     audio_path: Path,
     output_path: Path,
+    subtitles_path: Path,
 ) -> None:
+    subtitle_file = (
+        str(subtitles_path.resolve())
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "'\\''")
+    )
+
+    subtitle_filter = (
+        f"subtitles=filename='{subtitle_file}':"
+        "force_style='"
+        "FontName=DejaVu Sans,"
+        "FontSize=20,"
+        "PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,"
+        "BorderStyle=1,"
+        "Outline=2,"
+        "Shadow=0,"
+        "Alignment=2,"
+        "MarginL=30,"
+        "MarginR=30,"
+        "MarginV=24"
+        "'"
+    )
+
     command = [
         "ffmpeg",
         "-y",
@@ -210,6 +235,8 @@ def mux_audio(
         "0:v:0",
         "-map",
         "1:a:0",
+        "-vf",
+        subtitle_filter,
         "-r",
         str(FPS),
         "-video_track_timescale",
@@ -347,10 +374,17 @@ def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
 
     scene_path = scenes_dir / f"scene_{scene_number:03d}.mp4"
 
+    subtitles_path = write_scene_subtitles(
+        narration=str(scene.get("narration") or ""),
+        duration=total_duration,
+        output_path=scene_dir / "subtitles.srt",
+    )
+
     mux_audio(
         video_path=silent_path,
         audio_path=audio_path,
         output_path=scene_path,
+        subtitles_path=subtitles_path,
     )
 
     return scene_path
