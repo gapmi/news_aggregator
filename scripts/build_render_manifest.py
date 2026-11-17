@@ -859,6 +859,7 @@ def main() -> int:
         render_scenes.append(
             {
                 "scene_number": scene_number,
+                "narration": str(audio_scene.get("narration") or "").strip(),
                 "actual_duration_seconds": round(
                     float(actual_duration),
                     3,
