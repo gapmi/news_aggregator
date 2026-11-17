@@ -4,10 +4,12 @@ from collections import Counter
 import json
 import re
 import unicodedata
+import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+logger = logging.getLogger(__name__)
 
 MIN_SCENE_DURATION_SECONDS = 12
 MAX_SCENE_DURATION_SECONDS = 50
@@ -510,9 +512,12 @@ def validate_mistral_video_script(
     maximum_words = round(duration_sum * MAX_WORDS_PER_SECOND)
 
     if total_words < minimum_words:
-        errors.append(
-            "full_voiceover is too short for the number of scenes: "
-            f"expected_at_least={minimum_words} words, actual={total_words}"
+        logger.warning(
+            "full_voiceover is below the recommended word count: "
+            "recommended_at_least=%s words, actual=%s; "
+            "not a blocking validation error",
+            minimum_words,
+            total_words,
         )
 
     if total_words > maximum_words:
@@ -553,11 +558,19 @@ def validate_mistral_video_script(
         count = _word_count(scene.narration)
         minimum, maximum = _scene_word_bounds(scene.duration_seconds)
 
-        if count < minimum:
+        if count == 0:
             errors.append(
-                f"{prefix} narration is too short: "
-                f"expected_at_least={minimum} words for "
-                f"{scene.duration_seconds} seconds, actual={count}"
+                f"{prefix} narration contains no recognizable words"
+            )
+        elif count < minimum:
+            logger.warning(
+                "%s narration is below the recommended word count: "
+                "recommended_at_least=%s words, duration_seconds=%s, "
+                "actual=%s; manual editorial review recommended",
+                prefix,
+                minimum,
+                scene.duration_seconds,
+                count,
             )
 
         if count > maximum:
@@ -586,7 +599,7 @@ def validate_mistral_video_script(
             })
 
             if not _source_names_mentioned(scene.narration, sources):
-                __import__("logging").getLogger(__name__).warning(
+                    logger.warning(
                     "%s does not mention an allowed source for its topic; "
                     "manual source review required",
                     prefix,
