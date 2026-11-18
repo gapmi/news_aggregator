@@ -419,7 +419,7 @@ def render_country_map(
         ):
             if required:
                 raise ValueError("Selected country label does not fit.")
-            return False
+            return None
 
         padded = (
             box[0] - margin,
@@ -436,7 +436,7 @@ def render_country_map(
             ):
                 if required:
                     raise ValueError("Selected country label overlaps.")
-                return False
+                return None
 
         draw.multiline_text(
             position,
