@@ -198,6 +198,92 @@ def render_country_map(
         max(2, round(width / 900)),
     )
 
+    country_pixels = [
+        point
+        for polygon in projected
+        for ring in polygon
+        for point in pixels(ring)
+    ]
+    country_box = (
+        min(point[0] for point in country_pixels),
+        min(point[1] for point in country_pixels),
+        max(point[0] for point in country_pixels),
+        max(point[1] for point in country_pixels),
+    )
+
+    label_font = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        max(18, round(42 * (width / 2400))),
+    )
+    label_text = country_label(selected[0]["properties"])
+
+    label_left, label_top, label_right, label_bottom = draw.textbbox(
+        (0, 0),
+        label_text,
+        font=label_font,
+    )
+    label_width = label_right - label_left
+    label_height = label_bottom - label_top
+
+    country_width = country_box[2] - country_box[0]
+    country_height = country_box[3] - country_box[1]
+    fits_inside = (
+        label_width <= country_width
+        and label_height <= country_height
+    )
+
+    if fits_inside:
+        label_center = (
+            (country_box[0] + country_box[2]) / 2,
+            (country_box[1] + country_box[3]) / 2,
+        )
+    else:
+        gap = max(18, round(28 * (width / 2400)))
+        candidates = [
+            (
+                (country_box[0] + country_box[2]) / 2,
+                country_box[1] - label_height / 2 - gap,
+            ),
+            (
+                (country_box[0] + country_box[2]) / 2,
+                country_box[3] + label_height / 2 + gap,
+            ),
+            (
+                country_box[0] - label_width / 2 - gap,
+                (country_box[1] + country_box[3]) / 2,
+            ),
+            (
+                country_box[2] + label_width / 2 + gap,
+                (country_box[1] + country_box[3]) / 2,
+            ),
+        ]
+
+        margin = max(12, round(20 * (width / 2400)))
+        label_center = next(
+            (
+                point
+                for point in candidates
+                if margin <= point[0] - label_width / 2
+                and point[0] + label_width / 2 <= width - margin
+                and margin <= point[1] - label_height / 2
+                and point[1] + label_height / 2 <= map_height - margin
+            ),
+            (
+                (country_box[0] + country_box[2]) / 2,
+                (country_box[1] + country_box[3]) / 2,
+            ),
+        )
+
+    draw.text(
+        label_center,
+        label_text,
+        font=label_font,
+        fill=(244, 249, 255),
+        anchor="mm",
+        stroke_width=max(2, round(4 * (width / 2400))),
+        stroke_fill=BACKGROUND,
+    )
+
     image = Image.new("RGB", (width, height), BACKGROUND)
     image.paste(canvas, (0, 0))
 
