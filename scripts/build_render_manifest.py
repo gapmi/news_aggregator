@@ -831,9 +831,19 @@ def main() -> int:
                     )
                 except ValueError as exc:
                     map_fallback_reason = str(exc)
-                    map_result = render_world_map(**map_options)
+                    map_result = render_world_map(
+                        **map_options,
+                        highlighted_country_codes=(
+                            [country_code] if country_code is not None else []
+                        ),
+                    )
             else:
-                map_result = render_world_map(**map_options)
+                map_result = render_world_map(
+                    **map_options,
+                    highlighted_country_codes=(
+                        [country_code] if country_code is not None else []
+                    ),
+                )
 
             if (
                 not fallback_path.is_file()
