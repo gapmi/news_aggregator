@@ -46,9 +46,54 @@ CENTRAL_AMERICA: dict[str, Any] = {
     },
 }
 
+KOREAN_PENINSULA: dict[str, Any] = {
+    "id": "korean_peninsula",
+    "bounds": (112.0, 27.0, 145.0, 47.0),
+    "context_country_codes": (
+        "CHN",
+        "PRK",
+        "KOR",
+        "JPN",
+    ),
+    "water_labels": (
+        {
+            "text": "Yellow\nSea",
+            "longitude": 123.5,
+            "latitude": 35.0,
+        },
+        {
+            "text": "Sea of Japan\n(East Sea)",
+            "longitude": 135.0,
+            "latitude": 40.0,
+        },
+        {
+            "text": "Korea Strait",
+            "longitude": 129.0,
+            "latitude": 33.5,
+        },
+    ),
+    "country_label_overrides": {
+        "KOR": {
+            "longitude": 138.0,
+            "latitude": 35.5,
+            "leader_line": True,
+        },
+        "PRK": {
+            "longitude": 119.0,
+            "latitude": 42.0,
+            "leader_line": True,
+        },
+    },
+}
+
 
 def get_region_layout(properties: dict[str, Any]) -> dict[str, Any] | None:
     """Return a supported regional layout for a country."""
+    code = str(properties.get("ADM0_A3") or "").strip().upper()
+
+    if code in {"KOR", "PRK"}:
+        return KOREAN_PENINSULA
+
     if properties.get("SUBREGION") == "Central America":
         return CENTRAL_AMERICA
 
