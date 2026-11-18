@@ -11,11 +11,11 @@ from PIL import Image, ImageDraw, ImageFont
 from scripts.map_regions import country_label, get_region_layout
 
 
-BACKGROUND = (15, 25, 38)
-LAND = (39, 57, 74)
-BORDER = (81, 105, 123)
-HIGHLIGHT = (70, 177, 250)
-HIGHLIGHT_BORDER = (157, 220, 250)
+BACKGROUND = (18, 27, 40)
+LAND = (58, 78, 98)
+BORDER = (126, 152, 174)
+HIGHLIGHT = (255, 193, 7)
+HIGHLIGHT_BORDER = (255, 235, 150)
 
 
 def _polygons(geometry: dict) -> list:
@@ -200,6 +200,23 @@ def _render_country_map_closeup(
 
     image = Image.new("RGB", (width, height), BACKGROUND)
     image.paste(canvas, (0, 0))
+
+    overlay = Image.new("L", (width, height), 0)
+    overlay_draw = ImageDraw.Draw(overlay)
+
+    fade_start = round(height * (1 - caption_fraction))
+    fade_end = round(height * (1 - caption_fraction * 0.35))
+
+    for y in range(fade_start, height):
+        progress = (y - fade_start) / max(height - fade_start, 1)
+        opacity = round(190 * min(progress / max(fade_end - fade_start, 1), 1))
+        overlay_draw.line(
+            [(0, y), (width, y)],
+            fill=opacity,
+        )
+
+    dark_layer = Image.new("RGB", (width, height), (8, 14, 24))
+    image = Image.composite(dark_layer, image, overlay)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
