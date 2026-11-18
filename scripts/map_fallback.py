@@ -1,13 +1,14 @@
 """Standalone country-map renderer. Not connected to the pipeline yet."""
-from PIL import Image, ImageDraw, ImageFont
-from scripts.map_regions import country_label, get_region_layout
+
 from __future__ import annotations
 
 import json
 import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
+
+from scripts.map_regions import country_label, get_region_layout
 
 
 BACKGROUND = (15, 25, 38)
