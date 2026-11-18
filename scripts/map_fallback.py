@@ -459,15 +459,85 @@ def render_country_map(
     label_lon = float(override.get("longitude", target_lon))
     label_lat = float(override.get("latitude", target_lat))
 
-    # Reserve the selected country's label before optional context labels.
-    target_box = label(
-        country_label(properties),
+    country_pixels = [
+        pixel(*point[:2])
+        for polygon in target_polygons
+        for ring in polygon
+        for point in ring
+    ]
+    country_box = (
+        min(point[0] for point in country_pixels),
+        min(point[1] for point in country_pixels),
+        max(point[0] for point in country_pixels),
+        max(point[1] for point in country_pixels),
+    )
+
+    label_text = country_label(properties)
+    label_box = label(
+        label_text,
         label_lon,
         label_lat,
         font=bold,
         color=(244, 249, 255),
-        required=True,
+        required=False,
     )
+
+    def boxes_overlap(first, second, margin):
+        return (
+            first[0] - margin < second[2]
+            and first[2] + margin > second[0]
+            and first[1] - margin < second[3]
+            and first[3] + margin > second[1]
+        )
+
+    if label_box is None or boxes_overlap(
+        label_box,
+        country_box,
+        max(2, round(10 * size_factor)),
+    ):
+        candidates = [
+            (
+                (country_box[0] + country_box[2]) / 2,
+                country_box[1] - (country_box[3] - country_box[1]) / 2 - 1,
+            ),
+            (
+                (country_box[0] + country_box[2]) / 2,
+                country_box[3] + (country_box[3] - country_box[1]) / 2 + 1,
+            ),
+            (
+                country_box[0] - (country_box[2] - country_box[0]) / 2 - 1,
+                (country_box[1] + country_box[3]) / 2,
+            ),
+            (
+                country_box[2] + (country_box[2] - country_box[0]) / 2 + 1,
+                (country_box[1] + country_box[3]) / 2,
+            ),
+        ]
+
+        label_box = None
+        for candidate_lon, candidate_lat in candidates:
+            label_box = label(
+                label_text,
+                candidate_lon,
+                candidate_lat,
+                font=bold,
+                color=(244, 249, 255),
+                required=False,
+            )
+            if label_box is not None and not boxes_overlap(
+                label_box,
+                country_box,
+                max(2, round(10 * size_factor)),
+            ):
+                break
+            label_box = None
+
+        if label_box is None:
+            raise ValueError(
+                "Selected country label cannot be placed without overlap."
+            )
+
+    target_box = label_box
 
     if override.get("leader_line"):
         country_point = pixel(target_lon, target_lat)
