@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
+from scripts.map_fallback import render_country_map, render_world_map
+from scripts.scene_geography import resolve_scene_country
 
 WIDTH = 2400
 HEIGHT = 1350
@@ -71,6 +72,16 @@ def parse_args() -> argparse.Namespace:
         "--max-assets-per-scene",
         type=int,
         default=MAX_ASSETS_PER_SCENE,
+    )
+    parser.add_argument(
+        "--countries-geojson",
+        type=Path,
+        default=(
+            Path(__file__).resolve().parents[1]
+            / "media"
+            / "maps"
+            / "ne_110m_admin_0_countries.geojson"
+        ),
     )
     return parser.parse_args()
 
@@ -793,11 +804,46 @@ def main() -> int:
         copied_assets: list[str] = []
 
         if use_fallback:
-            fallback_path = create_fallback_asset(
-                target_dir=scene_dir,
-                scene_number=scene_number,
-                narration=str(audio_scene.get("narration") or ""),
+            narration = str(audio_scene.get("narration") or "")
+
+            geography = resolve_scene_country(
+                narration=narration,
+                geojson_path=args.countries_geojson,
             )
+
+            country_code = geography["country_code"]
+            fallback_path = scene_dir / "asset_01_fallback.png"
+
+            map_options = {
+                "geojson_path": args.countries_geojson,
+                "output_path": fallback_path,
+                "width": WIDTH,
+                "height": HEIGHT,
+            }
+
+            map_fallback_reason = None
+
+            if country_code is not None:
+                try:
+                    map_result = render_country_map(
+                        country_code=country_code,
+                        **map_options,
+                    )
+                except ValueError as exc:
+                    map_fallback_reason = str(exc)
+                    map_result = render_world_map(**map_options)
+            else:
+                map_result = render_world_map(**map_options)
+
+            if (
+                not fallback_path.is_file()
+                or fallback_path.stat().st_size == 0
+            ):
+                raise RuntimeError(
+                    f"Could not create map fallback: {fallback_path}"
+                )
+
+            highlighted_country = map_result.get("country_code")
 
             copied_assets.append(str(fallback_path.resolve()))
 
@@ -812,14 +858,23 @@ def main() -> int:
                     "article_url": None,
                     "candidate_rank": None,
                     "is_representative": None,
-                    "asset_type": "generated_editorial_card",
-                    "asset_source": "narration_editorial_card",
+                    "asset_type": "generated_map",
+                    "asset_source": "natural_earth",
+                    "map_mode": (
+                        "country"
+                        if highlighted_country is not None
+                        else "world"
+                    ),
+                    "highlighted_country_code": highlighted_country,
+                    "geography_resolution": geography,
+                    "map_render_fallback_reason": map_fallback_reason,
+                    "map_render": map_result,
                     "asset_url": None,
                     "width": WIDTH,
                     "height": HEIGHT,
                     "fallback_reason": (
-                        "No valid high-information source image was collected "
-                        "for this scene."
+                        "No valid high-information source image was "
+                        "collected for this scene."
                     ),
                 }
             )

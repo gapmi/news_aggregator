@@ -216,3 +216,85 @@ def render_country_map(
         ),
         "limited_by_full_outline": requested_scale > fit_scale,
     }
+
+
+def render_world_map(
+    *,
+    geojson_path: Path,
+    output_path: Path,
+    width: int = 2400,
+    height: int = 1350,
+    caption_fraction: float = 0.22,
+) -> dict:
+    """Render the whole world without highlighting or labels."""
+    if width < 100 or height < 100:
+        raise ValueError("Image dimensions must be at least 100 pixels.")
+
+    if not 0 <= caption_fraction < 0.5:
+        raise ValueError("caption_fraction must be in [0, 0.5).")
+
+    data = json.loads(
+        Path(geojson_path).read_text(encoding="utf-8-sig")
+    )
+
+    map_height = round(height * (1 - caption_fraction))
+    scale = min(
+        width * 0.94 / 360,
+        map_height * 0.94 / 180,
+    )
+
+    canvas = Image.new("RGB", (width, map_height), BACKGROUND)
+    draw = ImageDraw.Draw(canvas)
+
+    def pixels(ring):
+        return [
+            (
+                round(width / 2 + longitude * scale),
+                round(map_height / 2 - latitude * scale),
+            )
+            for longitude, latitude, *_ in ring
+        ]
+
+    for feature in data["features"]:
+        geometry = feature.get("geometry")
+        if not geometry:
+            continue
+
+        for polygon in _polygons(geometry):
+            if not polygon:
+                continue
+
+            outer = pixels(polygon[0])
+            if len(outer) < 3:
+                continue
+
+            draw.polygon(outer, fill=LAND)
+
+            for hole in polygon[1:]:
+                hole_pixels = pixels(hole)
+                if len(hole_pixels) >= 3:
+                    draw.polygon(hole_pixels, fill=BACKGROUND)
+
+            for ring in polygon:
+                line = pixels(ring)
+                if len(line) >= 2:
+                    draw.line(
+                        line + line[:1],
+                        fill=BORDER,
+                        width=1,
+                    )
+
+    image = Image.new("RGB", (width, height), BACKGROUND)
+    image.paste(canvas, (0, 0))
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output_path, format="PNG", optimize=True)
+
+    return {
+        "country_code": None,
+        "output_path": str(output_path),
+        "map_size": [width, map_height],
+        "caption_height": height - map_height,
+        "mode": "world",
+    }
