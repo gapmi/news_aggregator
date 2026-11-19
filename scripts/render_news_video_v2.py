@@ -194,7 +194,7 @@ def render_asset_segment(
         "-i",
         str(asset_path),
         "-filter_complex",
-                still_filter(
+        still_filter(
             profile=profile,
             visual_type=visual_type,
         ),
@@ -380,7 +380,10 @@ def write_scene_subtitles(
         raise ValueError("Subtitle duration must be finite and positive")
 
     # The timing is approximate: no word timestamps are available.
-    words_per_caption = 10
+    if words_per_caption < 1:
+        raise ValueError("words_per_caption must be positive")
+
+    # The timing is approximate: no word timestamps are available.
     captions = [
         words[index:index + words_per_caption]
         for index in range(0, len(words), words_per_caption)
@@ -449,7 +452,6 @@ def render_scene(
     scene_dir.mkdir(parents=True, exist_ok=True)
 
     visual_type = str(scene.get("visual_type") or "photo")
-
     if profile.name == "news_vertical":
         total_frames = math.ceil(total_duration * profile.fps)
 
