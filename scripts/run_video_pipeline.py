@@ -21,7 +21,11 @@ from scripts.video_branding import (
     TRANSITION_SECONDS,
     media_duration,
 )
-
+from scripts.video_profiles import (
+    DEFAULT_VIDEO_PROFILE,
+    VIDEO_PROFILES,
+    get_video_profile,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--run-id", type=int, required=True)
+    parser.add_argument(
+        "--profile",
+        choices=sorted(VIDEO_PROFILES),
+        default=DEFAULT_VIDEO_PROFILE,
+        help="Video profile; horizontal is the default.",
+    )
     parser.add_argument(
         "--target-duration-seconds",
         type=int,
@@ -269,6 +279,8 @@ def validate_final_video(
     *,
     final_path: Path,
     expected_duration_seconds: float,
+    expected_width: int = FINAL_WIDTH,
+    expected_height: int = FINAL_HEIGHT,
 ) -> dict[str, Any]:
     if not final_path.is_file():
         raise RuntimeError(f"Final video was not created: {final_path}")
@@ -317,15 +329,15 @@ def validate_final_video(
             f"{audio_stream.get('codec_name')!r}"
         )
 
-    if video_stream.get("width") != FINAL_WIDTH:
+    if video_stream.get("width") != expected_width:
         raise RuntimeError(
-            f"Final MP4 width must be {FINAL_WIDTH}; got "
+            f"Final MP4 width must be {expected_width}; got "
             f"{video_stream.get('width')}"
         )
 
-    if video_stream.get("height") != FINAL_HEIGHT:
+    if video_stream.get("height") != expected_height:
         raise RuntimeError(
-            f"Final MP4 height must be {FINAL_HEIGHT}; got "
+            f"Final MP4 height must be {expected_height}; got "
             f"{video_stream.get('height')}"
         )
 
@@ -418,6 +430,7 @@ def find_existing_success(
     conn,
     *,
     run_id: int,
+    profile_name: str,
 ) -> dict[str, Any] | None:
     with conn.cursor(
         cursor_factory=psycopg2.extras.RealDictCursor
@@ -429,12 +442,18 @@ def find_existing_success(
             WHERE job_type = 'video_pipeline'
               AND related_run_id = %s
               AND status = 'success'
+              AND COALESCE(
+                    meta->>'profile',
+                    'news_horizontal'
+                  ) = %s
+              AND meta->>'stage' = 'rendered'
             ORDER BY finished_at DESC NULLS LAST, id DESC
             LIMIT 1
             """,
-            (run_id,),
+            (run_id, profile_name),
         )
         row = cur.fetchone()
+
     return dict(row) if row else None
 
 
@@ -448,6 +467,7 @@ def start_pipeline_record(
     meta = {
         "stage": "starting",
         "run_id": run_id,
+        "profile": args.profile,
         "artifact_root": str(artifact_root),
         "target_duration_seconds": args.target_duration_seconds,
         "max_topics": args.max_topics,
@@ -654,6 +674,15 @@ def main() -> int:
 
     args = parse_args()
 
+    profile = get_video_profile(args.profile)
+
+    # Remove this guard after the existing-inputs vertical path is added.
+    if profile.name != DEFAULT_VIDEO_PROFILE:
+        raise RuntimeError(
+            "Vertical orchestration is not enabled yet. "
+            "Use the standalone renderer until integration is complete."
+        )
+
     if args.run_id < 1:
         raise ValueError("--run-id must be positive")
     if args.target_duration_seconds < 60:
@@ -674,10 +703,18 @@ def main() -> int:
 
     started_monotonic = time.monotonic()
 
-    artifact_root = ARTIFACTS_ROOT / f"run_{args.run_id}"
-    script_dir = artifact_root / "script"
-    audio_dir = artifact_root / "audio"
-    source_assets_dir = artifact_root / "source_assets"
+    run_root = ARTIFACTS_ROOT / f"run_{args.run_id}"
+
+    artifact_root = (
+        run_root
+        if profile.name == DEFAULT_VIDEO_PROFILE
+        else run_root / "vertical"
+    )
+
+    script_dir = run_root / "script"
+    audio_dir = run_root / "audio"
+    source_assets_dir = run_root / "source_assets"
+
     render_assets_dir = artifact_root / "render_assets"
     render_dir = artifact_root / "render"
 
@@ -705,6 +742,7 @@ def main() -> int:
         existing_success = find_existing_success(
             conn,
             run_id=args.run_id,
+            profile_name=profile.name,
         )
 
         if (
@@ -1084,6 +1122,8 @@ def main() -> int:
         final_video_report = validate_final_video(
             final_path=final_video_path,
             expected_duration_seconds=expected_final_duration_seconds,
+            expected_width=profile.width,
+            expected_height=profile.height,
         )
 
         success_meta = {
