@@ -1,11 +1,19 @@
+import math
 import argparse
 import json
 import shutil
+
 import subprocess
 import sys
+
 from pathlib import Path
 from typing import Any
 from scripts.video_branding import build_branded_sequence
+from scripts.video_profiles import (
+    DEFAULT_VIDEO_PROFILE,
+    VideoProfile,
+    get_video_profile,
+)
 
 WIDTH = 2400
 HEIGHT = 1350
@@ -20,6 +28,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--no-branding",
+        action="store_true",
+        help="Render scenes without branding; intended for previews.",
+    )
     return parser.parse_args()
 
 
@@ -37,14 +50,52 @@ def duration_frames(seconds: float) -> int:
     return max(1, round(seconds * FPS))
 
 
-def still_filter(frame_count: int) -> str:
+def still_filter(
+    *,
+    profile: VideoProfile,
+    visual_type: str,
+) -> str:
+    width = profile.width
+    height = profile.height
+
+    if profile.name == "news_horizontal":
+        return (
+            f"[0:v]scale={width}:{height}:"
+            "force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},"
+            f"fps={profile.fps},"
+            "format=yuv420p,"
+            "setsar=1,"
+            f"setpts=N/({profile.fps}*TB)[v]"
+        )
+
+    if visual_type == "map":
+        return (
+            f"[0:v]scale={width}:{height}:"
+            "force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:"
+            "color=0x0f1926,"
+            f"fps={profile.fps},"
+            "format=yuv420p,"
+            "setsar=1,"
+            f"setpts=N/({profile.fps}*TB)[v]"
+        )
+
     return (
-        "scale=2400:1350:force_original_aspect_ratio=increase,"
-        "crop=2400:1350,"
-        f"fps={FPS},"
+        "[0:v]split=2[background_source][foreground_source];"
+        "[background_source]"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},"
+        "boxblur=20:2[background];"
+        "[foreground_source]"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+        "[foreground];"
+        "[background][foreground]"
+        "overlay=(W-w)/2:(H-h)/2,"
+        f"fps={profile.fps},"
         "format=yuv420p,"
         "setsar=1,"
-        "setpts=N/(30*TB)"
+        f"setpts=N/({profile.fps}*TB)[v]"
     )
 
 
@@ -57,12 +108,18 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError("Manifest root must be an object")
 
+    profile = get_video_profile(
+        data.get("profile", DEFAULT_VIDEO_PROFILE)
+    )
+
     if data.get("canvas") != {
-        "width": WIDTH,
-        "height": HEIGHT,
-        "fps": FPS,
+        "width": profile.width,
+        "height": profile.height,
+        "fps": profile.fps,
     }:
-        raise RuntimeError("Unexpected canvas settings")
+        raise RuntimeError(
+            f"Unexpected canvas settings for profile={profile.name}"
+        )
 
     scenes = data.get("scenes")
     if not isinstance(scenes, list) or not scenes:
@@ -77,6 +134,29 @@ def load_manifest(path: Path) -> dict[str, Any]:
         )
 
     for scene in scenes:
+        duration = scene.get("actual_duration_seconds")
+
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            raise RuntimeError(
+                "Invalid duration for scene "
+                f"{scene.get('scene_number')}: {duration!r}"
+            )
+
+        visual_type = scene.get("visual_type")
+
+        if profile.name == "news_vertical":
+            if visual_type not in {"photo", "map"}:
+                raise RuntimeError(
+                    "Vertical scene must have visual_type='photo' "
+                    "or visual_type='map': "
+                    f"scene={scene.get('scene_number')}"
+                )
+            
         if not Path(str(scene.get("audio_path", ""))).is_file():
             raise RuntimeError(
                 f"Audio missing for scene {scene.get('scene_number')}"
@@ -98,10 +178,13 @@ def load_manifest(path: Path) -> dict[str, Any]:
 def render_asset_segment(
     *,
     asset_path: Path,
-    duration: float,
+    frames: int,
     output_path: Path,
+    profile: VideoProfile,
+    visual_type: str,
 ) -> None:
-    frames = duration_frames(duration)
+    if frames < 1:
+        raise ValueError("Segment must contain at least one frame")
 
     command = [
         "ffmpeg",
@@ -111,7 +194,10 @@ def render_asset_segment(
         "-i",
         str(asset_path),
         "-filter_complex",
-        f"[0:v]{still_filter(frames)}[v]",
+                still_filter(
+            profile=profile,
+            visual_type=visual_type,
+        ),
         "-map",
         "[v]",
         "-frames:v",
@@ -199,6 +285,7 @@ def mux_audio(
     audio_path: Path,
     output_path: Path,
     subtitles_path: Path,
+    profile: VideoProfile,
 ) -> None:
     subtitle_file = (
         str(subtitles_path.resolve())
@@ -206,6 +293,19 @@ def mux_audio(
         .replace(":", "\\:")
         .replace("'", "'\\''")
     )
+
+    if profile.name == "news_vertical":
+        subtitle_layout = (
+            "MarginL=24,"
+            "MarginR=24,"
+            "MarginV=60"
+        )
+    else:
+        subtitle_layout = (
+            "MarginL=30,"
+            "MarginR=30,"
+            "MarginV=24"
+        )
 
     subtitle_filter = (
         f"subtitles=filename='{subtitle_file}':"
@@ -218,9 +318,7 @@ def mux_audio(
         "Outline=2,"
         "Shadow=0,"
         "Alignment=2,"
-        "MarginL=30,"
-        "MarginR=30,"
-        "MarginV=24"
+        f"{subtitle_layout}"
         "'"
     )
 
@@ -271,6 +369,7 @@ def write_scene_subtitles(
     narration: str,
     duration: float,
     output_path: Path,
+    words_per_caption: int = 10,
 ) -> Path:
     words = narration.split()
 
@@ -335,7 +434,12 @@ def write_scene_subtitles(
     return output_path
 
 
-def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
+def render_scene(
+    scene: dict[str, Any],
+    scenes_dir: Path,
+    *,
+    profile: VideoProfile,
+) -> Path:
     scene_number = int(scene["scene_number"])
     total_duration = float(scene["actual_duration_seconds"])
     audio_path = Path(scene["audio_path"])
@@ -344,7 +448,30 @@ def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
     scene_dir = scenes_dir / f"scene_{scene_number:03d}_parts"
     scene_dir.mkdir(parents=True, exist_ok=True)
 
-    segment_duration = total_duration / len(assets)
+    visual_type = str(scene.get("visual_type") or "photo")
+
+    if profile.name == "news_vertical":
+        total_frames = math.ceil(total_duration * profile.fps)
+
+        if total_frames < len(assets):
+            raise ValueError(
+                f"Scene {scene_number} has more assets than frames"
+            )
+
+        base_frames, extra_frames = divmod(
+            total_frames,
+            len(assets),
+        )
+        segment_frame_counts = [
+            base_frames + (1 if index < extra_frames else 0)
+            for index in range(len(assets))
+        ]
+    else:
+        segment_duration = total_duration / len(assets)
+        segment_frame_counts = [
+            duration_frames(segment_duration)
+            for _ in assets
+        ]
     segment_paths: list[Path] = []
 
     print(
@@ -358,8 +485,10 @@ def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
 
         render_asset_segment(
             asset_path=asset_path,
-            duration=segment_duration,
+            frames=segment_frame_counts[index - 1],
             output_path=segment_path,
+            profile=profile,
+            visual_type=visual_type,
         )
 
         segment_paths.append(segment_path)
@@ -378,6 +507,9 @@ def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
         narration=str(scene.get("narration") or ""),
         duration=total_duration,
         output_path=scene_dir / "subtitles.srt",
+        words_per_caption=(
+            6 if profile.name == "news_vertical" else 10
+        ),
     )
 
     mux_audio(
@@ -385,6 +517,7 @@ def render_scene(scene: dict[str, Any], scenes_dir: Path) -> Path:
         audio_path=audio_path,
         output_path=scene_path,
         subtitles_path=subtitles_path,
+        profile=profile,
     )
 
     return scene_path
@@ -468,6 +601,15 @@ def main() -> int:
     require_binary("ffprobe")
 
     manifest = load_manifest(args.manifest)
+    profile = get_video_profile(
+        manifest.get("profile", DEFAULT_VIDEO_PROFILE)
+    )
+
+    if profile.name == "news_vertical" and not args.no_branding:
+        raise RuntimeError(
+            "Vertical branding is not configured yet. "
+            "Use --no-branding for the preview."
+        )
     run_id = int(manifest["run_id"])
 
     render_dir = args.output_dir
@@ -477,16 +619,27 @@ def main() -> int:
     scenes_dir.mkdir(parents=True, exist_ok=True)
 
     scene_paths = [
-        render_scene(scene, scenes_dir)
+        render_scene(
+            scene,
+            scenes_dir,
+            profile=profile,
+        )
         for scene in manifest["scenes"]
     ]
 
     final_path = render_dir / f"final_{run_id}.mp4"
 
-    sequence_paths, branding_report = build_branded_sequence(
-        scene_paths=scene_paths,
-        render_dir=render_dir,
-    )
+    if args.no_branding:
+        sequence_paths = scene_paths
+        branding_report = {
+            "enabled": False,
+            "extra_duration_seconds": 0.0,
+        }
+    else:
+        sequence_paths, branding_report = build_branded_sequence(
+            scene_paths=scene_paths,
+            render_dir=render_dir,
+        )
 
     concat_final(
         scene_paths=sequence_paths,
@@ -509,6 +662,12 @@ def main() -> int:
 
     report = {
         "run_id": run_id,
+        "profile": profile.name,
+        "canvas": {
+            "width": profile.width,
+            "height": profile.height,
+            "fps": profile.fps,
+        },
         "expected_duration_seconds": expected_duration,
         "news_duration_seconds": round(news_duration, 6),
         "branding_duration_seconds": round(branding_duration, 6),
