@@ -4,7 +4,7 @@ import argparse
 import csv
 import json
 import math
-import shutil
+
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,12 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from scripts.map_fallback import render_country_map, render_world_map
 from scripts.scene_geography import resolve_scene_country
+
+from scripts.video_profiles import (
+    DEFAULT_VIDEO_PROFILE,
+    VIDEO_PROFILES,
+    get_video_profile,
+)
 
 WIDTH = 2400
 HEIGHT = 1350
@@ -57,6 +63,12 @@ def parse_args() -> argparse.Namespace:
         "--audio-manifest",
         type=Path,
         required=True,
+    )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(VIDEO_PROFILES),
+        default=DEFAULT_VIDEO_PROFILE,
+        help="Video profile; horizontal is the default.",
     )
     parser.add_argument(
         "--assets-manifest",
@@ -710,6 +722,8 @@ def create_fallback_asset(
 def main() -> int:
     args = parse_args()
 
+    profile = get_video_profile(args.profile)
+
     if args.run_id < 1:
         raise ValueError("--run-id must be positive")
 
@@ -817,8 +831,8 @@ def main() -> int:
             map_options = {
                 "geojson_path": args.countries_geojson,
                 "output_path": fallback_path,
-                "width": WIDTH,
-                "height": HEIGHT,
+                "width": profile.width,
+                "height": profile.height,
             }
 
             map_fallback_reason = None
@@ -880,8 +894,8 @@ def main() -> int:
                     "map_render_fallback_reason": map_fallback_reason,
                     "map_render": map_result,
                     "asset_url": None,
-                    "width": WIDTH,
-                    "height": HEIGHT,
+                    "width": profile.width,
+                    "height": profile.height,
                     "fallback_reason": (
                         "No valid high-information source image was "
                         "collected for this scene."
@@ -924,22 +938,26 @@ def main() -> int:
         render_scenes.append(
             {
                 "scene_number": scene_number,
-                "narration": str(audio_scene.get("narration") or "").strip(),
+                "narration": str(
+                    audio_scene.get("narration") or ""
+                ).strip(),
                 "actual_duration_seconds": round(
                     float(actual_duration),
                     3,
                 ),
                 "audio_path": str(audio_path.resolve()),
                 "assets": copied_assets,
+                "visual_type": "map" if use_fallback else "photo",
             }
         )
 
     render_manifest = {
         "run_id": args.run_id,
+        "profile": profile.name,
         "canvas": {
-            "width": WIDTH,
-            "height": HEIGHT,
-            "fps": FPS,
+            "width": profile.width,
+            "height": profile.height,
+            "fps": profile.fps,
         },
         "scene_count": len(render_scenes),
         "scenes": render_scenes,
