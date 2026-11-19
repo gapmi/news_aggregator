@@ -607,11 +607,6 @@ def main() -> int:
         manifest.get("profile", DEFAULT_VIDEO_PROFILE)
     )
 
-    if profile.name == "news_vertical" and not args.no_branding:
-        raise RuntimeError(
-            "Vertical branding is not configured yet. "
-            "Use --no-branding for the preview."
-        )
     run_id = int(manifest["run_id"])
 
     render_dir = args.output_dir
@@ -641,6 +636,7 @@ def main() -> int:
         sequence_paths, branding_report = build_branded_sequence(
             scene_paths=scene_paths,
             render_dir=render_dir,
+            profile=profile,
         )
 
     concat_final(

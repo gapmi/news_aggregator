@@ -4,6 +4,11 @@ import json
 import math
 import subprocess
 from pathlib import Path
+from scripts.video_profiles import (
+    DEFAULT_VIDEO_PROFILE,
+    VideoProfile,
+    get_video_profile,
+)
 
 
 WIDTH = 2400
@@ -68,11 +73,29 @@ def encoding_options() -> list[str]:
     ]
 
 
-def canvas_filter() -> str:
+def canvas_filter(profile: VideoProfile | None = None) -> str:
+    if profile is None:
+        profile = get_video_profile(DEFAULT_VIDEO_PROFILE)
+
+    width = profile.width
+    height = profile.height
+
+    if profile.name == "news_horizontal":
+        return (
+            f"scale={width}:{height}:"
+            "force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},"
+            f"fps={profile.fps},"
+            "format=yuv420p,"
+            "setsar=1"
+        )
+
     return (
-        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={WIDTH}:{HEIGHT},"
-        f"fps={FPS},"
+        f"scale={width}:{height}:"
+        "force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:"
+        "color=0x0f1926,"
+        f"fps={profile.fps},"
         "format=yuv420p,"
         "setsar=1"
     )
@@ -83,6 +106,7 @@ def render_brand_clip(
     video_path: Path,
     audio_path: Path,
     output_path: Path,
+    profile: VideoProfile | None = None,
 ) -> float:
     video_seconds = media_duration(video_path)
     audio_seconds = media_duration(audio_path)
@@ -96,7 +120,7 @@ def render_brand_clip(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     filters = (
-        f"[0:v:0]setpts=PTS-STARTPTS,{canvas_filter()},"
+        f"[0:v:0]setpts=PTS-STARTPTS,{canvas_filter(profile)},"
         f"tpad=stop_mode=clone:stop_duration={padding:.6f},"
         f"trim=duration={duration:.6f},"
         f"setpts=N/({FPS}*TB)[v];"
@@ -192,6 +216,7 @@ def render_transition(
     audio_path: Path,
     output_path: Path,
     work_dir: Path,
+    profile: VideoProfile | None = None,
 ) -> float:
     audio_seconds = media_duration(audio_path)
     duration = TRANSITION_SECONDS
@@ -218,9 +243,9 @@ def render_transition(
     audio_tempo = tempo_filter(audio_seconds / duration)
 
     filters = (
-        f"[0:v:0]{canvas_filter()},"
+        f"[0:v:0]{canvas_filter(profile)},"
         f"settb=AVTB,setpts=N/({FPS}*TB)[previous];"
-        f"[1:v:0]{canvas_filter()},"
+        f"[1:v:0]{canvas_filter(profile)},"
         f"settb=AVTB,setpts=N/({FPS}*TB)[next];"
         "[previous][next]"
         f"blend=all_expr='A*(1-min(T/{fade_span:.9f},1))"
@@ -263,9 +288,12 @@ def build_branded_sequence(
     scene_paths: list[Path],
     render_dir: Path,
     media_dir: Path = MEDIA_DIR,
+    profile: VideoProfile | None = None,
 ) -> tuple[list[Path], dict[str, object]]:
     if not scene_paths:
         raise ValueError("Cannot brand an empty scene sequence")
+    if profile is None:
+        profile = get_video_profile(DEFAULT_VIDEO_PROFILE)
 
     video_path = media_dir / "video.mp4"
     intro_audio = media_dir / "news_intro.wav"
@@ -293,6 +321,7 @@ def build_branded_sequence(
         video_path=video_path,
         audio_path=ending_audio,
         output_path=ending_path,
+        profile=profile,
     )
 
     sequence: list[Path] = []
@@ -316,6 +345,7 @@ def build_branded_sequence(
                     branding_dir
                     / f"transition_{transition_number:03d}_frames"
                 ),
+                profile=profile,
             )
 
             sequence.append(transition_path)
@@ -331,6 +361,12 @@ def build_branded_sequence(
 
     report: dict[str, object] = {
         "enabled": True,
+        "profile": profile.name,
+        "canvas": {
+            "width": profile.width,
+            "height": profile.height,
+            "fps": profile.fps,
+        },
         "intro_duration_seconds": 0.0,
         "ending_duration_seconds": ending_seconds,
         "transition_duration_seconds": TRANSITION_SECONDS,
