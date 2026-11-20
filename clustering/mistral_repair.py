@@ -305,6 +305,17 @@ policy as the main generation request.
     Do not translate it or replace it with an inferred publisher.
     Correct the attribution without unnecessarily shortening the story.
     A publisher name does not make unsupported claims valid.
+20. Before returning, recheck every scene, not only the fields named in
+    VALIDATION_ERRORS. A schema error can prevent later content checks
+    from being reported, so the listed errors may not be exhaustive.
+    For each final scene, verify its duration, narration word budget,
+    visual restrictions and required visual-prompt suffix.
+21. If a visual prompt requests a graph, chart, labels or another forbidden
+    element, rewrite that prompt as a permitted non-data editorial visual
+    consistent with the supplied evidence. Do not merely append a negative
+    instruction while retaining the positive request for the forbidden
+    element. For example, "particles forming a rising graph" still requests
+    a graph even if followed by "no text or numbers".
 """.strip()
 
     request["messages"][0]["content"] += (

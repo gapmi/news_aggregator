@@ -234,6 +234,7 @@ def _find_pattern_matches(
         r"\bno\s+headlines?\b",
         r"\bno\s+(?:news\s+)?ticker\b",
         r"\bno\s+labels?\b",
+        r"\bno\s+borders?\s+(?:or|and)\s+labels?\b",
         r"\bno\s+documents?\b",
         r"\bno\s+signage\b",
     )
