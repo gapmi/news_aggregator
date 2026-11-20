@@ -278,6 +278,27 @@ def concat_video_segments(
 
     run(command)
 
+def build_subtitle_style(profile: VideoProfile) -> str:
+    if profile.name == "news_vertical":
+        font_size = 14
+        outline = 1
+        margins = "MarginL=24,MarginR=24,MarginV=24"
+    else:
+        font_size = 20
+        outline = 2
+        margins = "MarginL=30,MarginR=30,MarginV=24"
+
+    return (
+        "FontName=DejaVu Sans,"
+        f"FontSize={font_size},"
+        "PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,"
+        "BorderStyle=1,"
+        f"Outline={outline},"
+        "Shadow=0,"
+        "Alignment=2,"
+        f"{margins}"
+    )
 
 def mux_audio(
     *,
@@ -294,32 +315,9 @@ def mux_audio(
         .replace("'", "'\\''")
     )
 
-    if profile.name == "news_vertical":
-        subtitle_layout = (
-            "MarginL=24,"
-            "MarginR=24,"
-            "MarginV=60"
-        )
-    else:
-        subtitle_layout = (
-            "MarginL=30,"
-            "MarginR=30,"
-            "MarginV=24"
-        )
-
     subtitle_filter = (
         f"subtitles=filename='{subtitle_file}':"
-        "force_style='"
-        "FontName=DejaVu Sans,"
-        "FontSize=20,"
-        "PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,"
-        "BorderStyle=1,"
-        "Outline=2,"
-        "Shadow=0,"
-        "Alignment=2,"
-        f"{subtitle_layout}"
-        "'"
+        f"force_style='{build_subtitle_style(profile)}'"
     )
 
     command = [
