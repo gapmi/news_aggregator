@@ -1,11 +1,14 @@
 from __future__ import annotations
+from scripts.upload_youtube_video import inspect_upload_history
 
 import json
 import logging
 import os
 import subprocess
+
 import sys
 import time
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -182,23 +185,35 @@ def find_latest_eligible_run(conn) -> int | None:
         cur.execute(
             """
             SELECT r.id
-            FROM clustering_runs r
+            FROM clustering_runs AS r
             WHERE r.status IN ('success', 'completed', 'degraded')
               AND r.finished_at IS NOT NULL
-              AND NOT EXISTS (
+              AND EXISTS (
                   SELECT 1
-                  FROM pipeline_runs p
-                  WHERE p.job_type = 'video_pipeline'
-                    AND p.related_run_id = r.id
-                    AND p.status = 'success'
-                    AND COALESCE(
-                        p.meta->>'profile',
-                        'news_horizontal'
-                    ) = 'news_horizontal'
-                    AND COALESCE(
-                        p.meta->>'youtube_video_id',
-                        ''
-                    ) <> ''
+                  FROM (
+                      VALUES
+                          ('news_horizontal'),
+                          ('news_vertical')
+                  ) AS required(profile)
+                  WHERE NOT EXISTS (
+                      SELECT 1
+                      FROM pipeline_runs AS p
+                      WHERE p.job_type = 'video_pipeline'
+                        AND p.related_run_id = r.id
+                        AND p.status = 'success'
+                        AND COALESCE(
+                            p.meta->>'profile',
+                            'news_horizontal'
+                        ) = required.profile
+                        AND COALESCE(
+                            p.meta->>'youtube_video_id',
+                            ''
+                        ) <> ''
+                        AND (
+                            required.profile = 'news_horizontal'
+                            OR p.meta->>'youtube_privacy_status' = 'private'
+                        )
+                  )
               )
             ORDER BY r.finished_at DESC, r.id DESC
             LIMIT 1
@@ -219,7 +234,20 @@ def run_command(command: list[str]) -> None:
     )
 
 
-def run_video_pipeline(run_id: int) -> None:
+def run_video_pipeline(
+    run_id: int,
+    *,
+    profiles: tuple[str, ...] = (
+        "news_horizontal",
+        "news_vertical",
+    ),
+) -> None:
+    if not profiles or any(
+        profile not in {"news_horizontal", "news_vertical"}
+        for profile in profiles
+    ):
+        raise ValueError("Unsupported or empty video profile selection")
+
     common_arguments = [
         "--run-id",
         str(run_id),
@@ -231,46 +259,44 @@ def run_video_pipeline(run_id: int) -> None:
         str(HEADLINES_PER_TOPIC),
     ]
 
-    log.info(
-        "Building horizontal video: run_id=%s",
-        run_id,
+    for profile in profiles:
+        command = [
+            sys.executable,
+            "-m",
+            "scripts.run_video_pipeline",
+            *common_arguments,
+            "--profile",
+            profile,
+        ]
+
+        if profile == "news_vertical":
+            command.append("--existing-inputs-only")
+
+        log.info(
+            "Building video profile: run_id=%s profile=%s",
+            run_id,
+            profile,
+        )
+        run_command(command)
+
+
+def run_upload(
+    run_id: int,
+    *,
+    profile: str = "news_horizontal",
+) -> None:
+    if profile not in {"news_horizontal", "news_vertical"}:
+        raise ValueError(f"Unsupported video profile: {profile}")
+
+    artifact_root = (
+        PROJECT_ROOT / "artifacts" / f"run_{run_id}"
     )
-    run_command([
-        sys.executable,
-        "-m",
-        "scripts.run_video_pipeline",
-        *common_arguments,
-        "--profile",
-        "news_horizontal",
-    ])
 
-    log.info(
-        "Building vertical video from existing inputs: run_id=%s",
-        run_id,
-    )
-    run_command([
-        sys.executable,
-        "-m",
-        "scripts.run_video_pipeline",
-        *common_arguments,
-        "--profile",
-        "news_vertical",
-        "--existing-inputs-only",
-    ])
+    if profile == "news_vertical":
+        artifact_root = artifact_root / "vertical"
 
-    log.info(
-        "Both video profiles completed: run_id=%s",
-        run_id,
-    )
-
-
-def run_upload(run_id: int) -> None:
     final_path = (
-        PROJECT_ROOT
-        / "artifacts"
-        / f"run_{run_id}"
-        / "render"
-        / f"final_{run_id}.mp4"
+        artifact_root / "render" / f"final_{run_id}.mp4"
     )
 
     command = [
@@ -279,10 +305,12 @@ def run_upload(run_id: int) -> None:
         "scripts.upload_youtube_video",
         "--run-id",
         str(run_id),
+        "--profile",
+        profile,
         "--video-path",
         str(final_path),
         "--privacy-status",
-        PRIVACY_STATUS,
+        "private" if profile == "news_vertical" else PRIVACY_STATUS,
     ]
 
     if not UPLOAD_ENABLED:
@@ -302,6 +330,32 @@ def run_cleanup() -> None:
             "--dry-run",
         ]
     )
+
+def process_run_profiles(conn, *, run_id: int) -> None:
+    for profile in ("news_horizontal", "news_vertical"):
+        existing_video_id = inspect_upload_history(
+            conn,
+            run_id=run_id,
+            profile=profile,
+        )
+
+        if existing_video_id:
+            log.info(
+                "Skipping uploaded profile: run_id=%s profile=%s id=%s",
+                run_id,
+                profile,
+                existing_video_id,
+            )
+            continue
+
+        run_video_pipeline(
+            run_id,
+            profiles=(profile,),
+        )
+        run_upload(
+            run_id,
+            profile=profile,
+        )
 
 
 def process_slot(slot: str) -> None:
@@ -342,8 +396,7 @@ def process_slot(slot: str) -> None:
             )
             return
 
-        run_video_pipeline(run_id)
-        run_upload(run_id)
+        process_run_profiles(conn, run_id=run_id)
         run_cleanup()
 
         finish_schedule_record(
