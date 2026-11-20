@@ -54,6 +54,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument(
         "--profile",
+    parser.add_argument(
+        "--existing-inputs-only",
+        action="store_true",
+        help=(
+            "Use saved scene, audio and source-asset manifests only. "
+            "Never generate scripts, TTS or collect source assets."
+        ),
+    ),
         choices=sorted(VIDEO_PROFILES),
         default=DEFAULT_VIDEO_PROFILE,
         help="Video profile; horizontal is the default.",
@@ -478,6 +486,7 @@ def start_pipeline_record(
         "force_assets": args.force_assets,
         "force_render": args.force_render,
         "upload_mode": "none",
+        "existing_inputs_only": args.existing_inputs_only,
     }
 
     with conn.cursor() as cur:
@@ -698,6 +707,16 @@ def main() -> int:
         args.force_tts = True
         args.force_assets = True
 
+    if args.existing_inputs_only and (
+        args.force_script
+        or args.force_tts
+        or args.force_assets
+    ):
+        raise ValueError(
+            "--existing-inputs-only cannot be combined with "
+            "--force-script, --force-tts or --force-assets"
+        )
+    
     if args.force_tts or args.force_assets:
         args.force_render = True
 
