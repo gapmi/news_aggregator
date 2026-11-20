@@ -18,7 +18,7 @@ from typing import Any
 import csv
 import psycopg2.extras
 
-from clustering.offline import get_conn
+
 from scripts.video_branding import (
     MEDIA_DIR,
     TRANSITION_SECONDS,
@@ -401,6 +401,10 @@ def validate_final_video(
         "sha256": sha256_file(final_path),
     }
 
+def get_conn():
+    from clustering.offline import get_conn as open_connection
+
+    return open_connection()
 
 def try_acquire_lock(conn) -> bool:
     with conn.cursor() as cur:
