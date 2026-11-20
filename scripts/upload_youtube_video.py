@@ -9,13 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import psycopg2.extras
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload
-
-from clustering.offline import get_conn
 
 
 log = logging.getLogger(__name__)
@@ -58,8 +51,15 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+def get_conn():
+    from clustering.offline import get_conn as open_connection
 
-def load_credentials() -> Credentials:
+    return open_connection()
+
+def load_credentials() -> Any:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+
     if not TOKEN_FILE.is_file():
         raise RuntimeError(
             "YouTube OAuth token is missing. Run scripts.youtube_oauth first: "
@@ -145,6 +145,14 @@ def latest_video_pipeline_run(
             WHERE job_type = 'video_pipeline'
               AND related_run_id = %s
               AND status = 'success'
+              AND COALESCE(
+                    meta->>'profile',
+                    'news_horizontal'
+                  ) = 'news_horizontal'
+              AND meta->>'stage' IN (
+                    'rendered',
+                    'youtube_uploaded'
+                  )
             ORDER BY finished_at DESC NULLS LAST, id DESC
             LIMIT 1
             """,
@@ -181,6 +189,15 @@ def save_upload_result(
 
     conn.commit()
 
+def build_youtube_client(credentials):
+    from googleapiclient.discovery import build
+
+    return build(
+        "youtube",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False,
+    )
 
 def resumable_upload(
     *,
@@ -190,6 +207,9 @@ def resumable_upload(
     privacy_status: str,
     made_for_kids: bool,
 ) -> dict[str, Any]:
+    from googleapiclient.errors import HttpError
+    from googleapiclient.http import MediaFileUpload
+
     body = {
         "snippet": {
             "title": metadata["title"],
@@ -260,6 +280,20 @@ def main() -> int:
     if args.run_id < 1:
         raise ValueError("--run-id must be positive")
 
+    expected_video_path = (
+        PROJECT_ROOT
+        / "artifacts"
+        / f"run_{args.run_id}"
+        / "render"
+        / f"final_{args.run_id}.mp4"
+    )
+
+    if args.video_path.resolve() != expected_video_path.resolve():
+        raise RuntimeError(
+            "This uploader only supports the horizontal video: "
+            f"{expected_video_path}"
+        )
+
     if not args.video_path.is_file():
         raise RuntimeError(f"Video file was not found: {args.video_path}")
 
@@ -275,6 +309,20 @@ def main() -> int:
             conn,
             run_id=args.run_id,
         )
+
+        pipeline_meta = pipeline_record["meta"] or {}
+        recorded_video_path = pipeline_meta.get("final_video_path")
+
+        if (
+            not isinstance(recorded_video_path, str)
+            or not recorded_video_path.strip()
+            or Path(recorded_video_path).resolve()
+            != args.video_path.resolve()
+        ):
+            raise RuntimeError(
+                "Requested video does not match the horizontal "
+                "pipeline record"
+            )
 
         existing_video_id = (
             (pipeline_record["meta"] or {}).get("youtube_video_id")
@@ -324,12 +372,7 @@ def main() -> int:
 
         credentials = load_credentials()
 
-        youtube = build(
-            "youtube",
-            "v3",
-            credentials=credentials,
-            cache_discovery=False,
-        )
+        youtube = build_youtube_client(credentials)
 
         response = resumable_upload(
             youtube=youtube,

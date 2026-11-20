@@ -12,8 +12,6 @@ from typing import Any
 
 import psycopg2.extras
 
-from clustering.offline import get_conn
-
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +53,10 @@ RETENTION_HOURS = int(
     os.getenv("VIDEO_ARTIFACT_RETENTION_HOURS", "48")
 )
 
+def get_conn():
+    from clustering.offline import get_conn as open_connection
+
+    return open_connection()
 
 def acquire_lock(conn) -> bool:
     with conn.cursor() as cur:
@@ -190,6 +192,10 @@ def find_latest_eligible_run(conn) -> int | None:
                     AND p.related_run_id = r.id
                     AND p.status = 'success'
                     AND COALESCE(
+                        p.meta->>'profile',
+                        'news_horizontal'
+                    ) = 'news_horizontal'
+                    AND COALESCE(
                         p.meta->>'youtube_video_id',
                         ''
                     ) <> ''
@@ -214,20 +220,47 @@ def run_command(command: list[str]) -> None:
 
 
 def run_video_pipeline(run_id: int) -> None:
-    run_command(
-        [
-            sys.executable,
-            "-m",
-            "scripts.run_video_pipeline",
-            "--run-id",
-            str(run_id),
-            "--target-duration-seconds",
-            str(TARGET_DURATION_SECONDS),
-            "--max-topics",
-            str(MAX_TOPICS),
-            "--headlines-per-topic",
-            str(HEADLINES_PER_TOPIC),
-        ]
+    common_arguments = [
+        "--run-id",
+        str(run_id),
+        "--target-duration-seconds",
+        str(TARGET_DURATION_SECONDS),
+        "--max-topics",
+        str(MAX_TOPICS),
+        "--headlines-per-topic",
+        str(HEADLINES_PER_TOPIC),
+    ]
+
+    log.info(
+        "Building horizontal video: run_id=%s",
+        run_id,
+    )
+    run_command([
+        sys.executable,
+        "-m",
+        "scripts.run_video_pipeline",
+        *common_arguments,
+        "--profile",
+        "news_horizontal",
+    ])
+
+    log.info(
+        "Building vertical video from existing inputs: run_id=%s",
+        run_id,
+    )
+    run_command([
+        sys.executable,
+        "-m",
+        "scripts.run_video_pipeline",
+        *common_arguments,
+        "--profile",
+        "news_vertical",
+        "--existing-inputs-only",
+    ])
+
+    log.info(
+        "Both video profiles completed: run_id=%s",
+        run_id,
     )
 
 
@@ -266,6 +299,7 @@ def run_cleanup() -> None:
             "scripts.cleanup_video_artifacts",
             "--retention-hours",
             str(RETENTION_HOURS),
+            "--dry-run",
         ]
     )
 
@@ -321,6 +355,27 @@ def process_slot(slot: str) -> None:
             meta={
                 "stage": "completed",
                 "upload_enabled": UPLOAD_ENABLED,
+                "video_profiles": [
+                    "news_horizontal",
+                    "news_vertical",
+                ],
+                "video_paths": {
+                    "news_horizontal": str(
+                        PROJECT_ROOT
+                        / "artifacts"
+                        / f"run_{run_id}"
+                        / "render"
+                        / f"final_{run_id}.mp4"
+                    ),
+                    "news_vertical": str(
+                        PROJECT_ROOT
+                        / "artifacts"
+                        / f"run_{run_id}"
+                        / "vertical"
+                        / "render"
+                        / f"final_{run_id}.mp4"
+                    ),
+                },
             },
         )
 

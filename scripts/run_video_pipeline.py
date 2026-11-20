@@ -482,7 +482,10 @@ def find_existing_success(
                     meta->>'profile',
                     'news_horizontal'
                   ) = %s
-              AND meta->>'stage' = 'rendered'
+              AND meta->>'stage' IN (
+                    'rendered',
+                    'youtube_uploaded'
+                  )
             ORDER BY finished_at DESC NULLS LAST, id DESC
             LIMIT 1
             """,
@@ -982,10 +985,10 @@ def main() -> int:
 
     try:
         if not try_acquire_lock(conn):
-            log.warning(
-                "Video pipeline skipped: another worker holds the video lock"
+            raise RuntimeError(
+                "Video pipeline cannot start: "
+                "another worker holds the video lock"
             )
-            return 0
 
         lock_acquired = True
         validate_clustering_run(conn, args.run_id)
