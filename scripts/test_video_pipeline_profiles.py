@@ -129,6 +129,16 @@ class VideoPipelineProfileTests(unittest.TestCase):
                     "validate_existing_inputs": {
                         "return_value": validated_inputs,
                     },
+                    "build_news_fingerprint": {
+                        "return_value": {
+                            "sha256": "input-test-hash",
+                            "payload": {
+                                "schema_version": 1,
+                                "settings": {},
+                                "files": {},
+                            },
+                        },
+                    },
                     "run_command": {
                         "side_effect": fake_run_command,
                     },
@@ -146,6 +156,22 @@ class VideoPipelineProfileTests(unittest.TestCase):
             self.assertEqual(result, 0)
 
             mocks["validate_existing_inputs"].assert_called_once()
+            mocks["build_news_fingerprint"].assert_called_once_with(
+                run_id=568,
+                profile=pipeline.get_video_profile("news_vertical"),
+                project_root=pipeline.PROJECT_ROOT,
+                scene_manifest_path=(
+                    run_root / "script" / "scene_manifest_568.json"
+                ),
+                audio_manifest_path=(
+                    run_root / "audio" / "audio_manifest.json"
+                ),
+                assets_manifest_path=(
+                    run_root / "source_assets" / "manifest.csv"
+                ),
+                media_dir=pipeline.MEDIA_DIR,
+                max_assets_per_scene=3,
+            )
             mocks["run_command"].assert_called_once()
             mocks["has_valid_mistral_script"].assert_not_called()
             mocks["has_valid_tts_output"].assert_not_called()
@@ -181,6 +207,22 @@ class VideoPipelineProfileTests(unittest.TestCase):
                 (run_root / ".pipeline_state.json").exists()
             )
             self.assertFalse((run_root / "render").exists())
+            self.assertFalse(
+                (
+                    run_root
+                    / "vertical"
+                    / "render"
+                    / "render_fingerprint.json"
+                ).exists()
+            )
+            self.assertFalse(
+                (
+                    run_root
+                    / "vertical"
+                    / "render"
+                    / ".render_fingerprint.tmp.json"
+                ).exists()
+            )
 
     def test_existing_output_is_protected(self) -> None:
         argv = [
@@ -406,5 +448,472 @@ class VideoPipelineProfileTests(unittest.TestCase):
                     )
 
             probe.assert_not_called()
+    def test_render_fingerprint_requires_stable_inputs(self) -> None:
+        for inputs_changed in (False, True):
+            with self.subTest(inputs_changed=inputs_changed):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    render_dir = (
+                        root / "run_568" / "vertical" / "render"
+                    )
+                    final_path = render_dir / "final_568.mp4"
+                    profile = pipeline.get_video_profile(
+                        "news_vertical"
+                    )
+
+                    before = {
+                        "sha256": "before-hash",
+                        "payload": {
+                            "schema_version": 1,
+                            "settings": {},
+                            "files": {
+                                "audio.scene_001": {
+                                    "status": "present",
+                                    "sha256": "audio-before",
+                                },
+                            },
+                        },
+                    }
+                    after = json.loads(json.dumps(before))
+
+                    if inputs_changed:
+                        after["sha256"] = "after-hash"
+                        after["payload"]["files"][
+                            "audio.scene_001"
+                        ]["sha256"] = "audio-after"
+
+                    validated_inputs = {
+                        "scene_count": 1,
+                        "audio_duration_seconds": 5.0,
+                        "scene_manifest_sha256": "script-hash",
+                        "audio_manifest_sha256": "audio-hash",
+                        "source_assets_manifest_sha256": "assets-hash",
+                    }
+
+                    def fake_run_command(command, *, env=None):
+                        module = command[2]
+                        output_dir = Path(
+                            command[
+                                command.index("--output-dir") + 1
+                            ]
+                        )
+                        output_dir.mkdir(
+                            parents=True,
+                            exist_ok=True,
+                        )
+
+                        if module == "scripts.build_render_manifest":
+                            (
+                                output_dir / "render_manifest.json"
+                            ).write_text(
+                                "{}\n",
+                                encoding="utf-8",
+                            )
+                        elif module == "scripts.render_news_video_v2":
+                            final_path.write_bytes(b"test-mp4")
+                            (
+                                output_dir / "render_report_v2.json"
+                            ).write_text(
+                                json.dumps({
+                                    "run_id": 568,
+                                    "profile": profile.name,
+                                    "canvas": {
+                                        "width": profile.width,
+                                        "height": profile.height,
+                                        "fps": profile.fps,
+                                    },
+                                    "scene_files": ["scene_001.mp4"],
+                                    "news_duration_seconds": 5.0,
+                                }),
+                                encoding="utf-8",
+                            )
+                        else:
+                            self.fail(
+                                f"Unexpected command: {command}"
+                            )
+
+                    argv = [
+                        "run_video_pipeline",
+                        "--run-id",
+                        "568",
+                        "--profile",
+                        "news_vertical",
+                        "--existing-inputs-only",
+                    ]
+                    conn = MagicMock()
+
+                    replacements = {
+                        "get_conn": {"return_value": conn},
+                        "try_acquire_lock": {"return_value": True},
+                        "release_lock": {},
+                        "validate_clustering_run": {},
+                        "find_existing_success": {
+                            "return_value": None,
+                        },
+                        "start_pipeline_record": {
+                            "return_value": 123,
+                        },
+                        "update_pipeline_meta": {},
+                        "complete_pipeline_record": {},
+                        "validate_existing_inputs": {
+                            "return_value": validated_inputs,
+                        },
+                        "build_news_fingerprint": {
+                            "side_effect": [before, after],
+                        },
+                        "run_command": {
+                            "side_effect": fake_run_command,
+                        },
+                        "load_branding_duration": {
+                            "return_value": 2.0,
+                        },
+                        "validate_final_video": {
+                            "return_value": {
+                                "sha256": "final-video-hash",
+                                "size_bytes": 2_000_000,
+                                "duration_seconds": 7.0,
+                                "duration_delta_seconds": 0.0,
+                            },
+                        },
+                        "has_valid_mistral_script": {},
+                        "has_valid_tts_output": {},
+                    }
+
+                    with ExitStack() as stack:
+                        stack.enter_context(
+                            patch.object(sys, "argv", argv)
+                        )
+                        stack.enter_context(
+                            patch.object(
+                                pipeline,
+                                "ARTIFACTS_ROOT",
+                                root,
+                            )
+                        )
+                        mocks = {
+                            name: stack.enter_context(
+                                patch.object(
+                                    pipeline,
+                                    name,
+                                    **options,
+                                )
+                            )
+                            for name, options in replacements.items()
+                        }
+                        captured = stack.enter_context(
+                            self.assertLogs(
+                                pipeline.log,
+                                level="INFO",
+                            )
+                        )
+                        result = pipeline.main()
+
+                    fingerprint_path = (
+                        render_dir / "render_fingerprint.json"
+                    )
+                    temporary_path = (
+                        render_dir / ".render_fingerprint.tmp.json"
+                    )
+
+                    self.assertEqual(
+                        mocks["build_news_fingerprint"].call_count,
+                        2,
+                    )
+                    self.assertEqual(
+                        [
+                            call.args[0][2]
+                            for call in mocks[
+                                "run_command"
+                            ].call_args_list
+                        ],
+                        [
+                            "scripts.build_render_manifest",
+                            "scripts.render_news_video_v2",
+                        ],
+                    )
+                    mocks[
+                        "has_valid_mistral_script"
+                    ].assert_not_called()
+                    mocks[
+                        "has_valid_tts_output"
+                    ].assert_not_called()
+                    mocks[
+                        "release_lock"
+                    ].assert_called_once_with(conn)
+                    conn.close.assert_called_once()
+                    self.assertFalse(temporary_path.exists())
+
+                    mocks[
+                        "complete_pipeline_record"
+                    ].assert_called_once()
+                    completion = mocks[
+                        "complete_pipeline_record"
+                    ].call_args.kwargs
+
+                    if inputs_changed:
+                        self.assertEqual(result, 1)
+                        self.assertEqual(
+                            completion["status"],
+                            "failed",
+                        )
+                        self.assertFalse(
+                            fingerprint_path.exists()
+                        )
+                        self.assertTrue(
+                            any(
+                                "Render inputs changed during production"
+                                in entry
+                                for entry in captured.output
+                            )
+                        )
+                    else:
+                        self.assertEqual(result, 0)
+                        self.assertEqual(
+                            completion["status"],
+                            "success",
+                        )
+                        record = json.loads(
+                            fingerprint_path.read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                        self.assertEqual(
+                            record,
+                            {
+                                "record_version": 1,
+                                "run_id": 568,
+                                "profile": "news_vertical",
+                                "inputs": before,
+                                "output": {
+                                    "filename": "final_568.mp4",
+                                    "sha256": "final-video-hash",
+                                    "size_bytes": 2_000_000,
+                                    "duration_seconds": 7.0,
+                                },
+                            },
+                        )
+    def test_reuse_preserves_existing_outputs(self) -> None:
+        for scenario in ("success", "changed_inputs", "invalid_video"):
+            with self.subTest(scenario=scenario):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    profile_root = root / "run_568" / "vertical"
+                    render_dir = profile_root / "render"
+                    render_dir.mkdir(parents=True)
+
+                    profile = pipeline.get_video_profile(
+                        "news_vertical"
+                    )
+                    final_path = render_dir / "final_568.mp4"
+                    final_path.write_bytes(b"existing-test-video")
+                    video_hash = pipeline.sha256_file(final_path)
+
+                    saved_inputs = {
+                        "sha256": "saved-input-hash",
+                        "payload": {
+                            "schema_version": 1,
+                            "settings": {},
+                            "files": {},
+                        },
+                    }
+                    current_inputs = json.loads(
+                        json.dumps(saved_inputs)
+                    )
+
+                    if scenario == "changed_inputs":
+                        current_inputs["sha256"] = "changed-input-hash"
+                        current_inputs["payload"]["settings"] = {
+                            "max_assets_per_scene": 4,
+                        }
+
+                    (render_dir / "render_fingerprint.json").write_text(
+                        json.dumps({
+                            "record_version": 1,
+                            "run_id": 568,
+                            "profile": profile.name,
+                            "inputs": saved_inputs,
+                            "output": {
+                                "filename": final_path.name,
+                                "sha256": video_hash,
+                                "size_bytes": final_path.stat().st_size,
+                                "duration_seconds": 7.0,
+                            },
+                        }),
+                        encoding="utf-8",
+                    )
+                    (render_dir / "render_report_v2.json").write_text(
+                        json.dumps({
+                            "run_id": 568,
+                            "profile": profile.name,
+                            "canvas": {
+                                "width": profile.width,
+                                "height": profile.height,
+                                "fps": profile.fps,
+                            },
+                            "scene_files": ["scene_001.mp4"],
+                            "news_duration_seconds": 5.0,
+                        }),
+                        encoding="utf-8",
+                    )
+                    (profile_root / ".pipeline_state.json").write_text(
+                        json.dumps({
+                            "status": "success",
+                            "stage": "rendered",
+                            "pipeline_run_id": 999,
+                        }),
+                        encoding="utf-8",
+                    )
+
+                    def snapshot():
+                        return {
+                            path.relative_to(root).as_posix():
+                            path.read_bytes()
+                            for path in root.rglob("*")
+                            if path.is_file()
+                        }
+
+                    original_files = snapshot()
+                    conn = MagicMock()
+                    argv = [
+                        "run_video_pipeline",
+                        "--run-id",
+                        "568",
+                        "--profile",
+                        "news_vertical",
+                        "--existing-inputs-only",
+                    ]
+
+                    video_validation = {
+                        "return_value": {
+                            "sha256": video_hash,
+                            "size_bytes": final_path.stat().st_size,
+                            "duration_seconds": 7.0,
+                            "duration_delta_seconds": 0.0,
+                        },
+                    }
+
+                    if scenario == "invalid_video":
+                        video_validation = {
+                            "side_effect": RuntimeError(
+                                "Test quality gate rejected MP4"
+                            ),
+                        }
+
+                    replacements = {
+                        "get_conn": {"return_value": conn},
+                        "try_acquire_lock": {"return_value": True},
+                        "release_lock": {},
+                        "validate_clustering_run": {},
+                        "validate_existing_inputs": {
+                            "return_value": {
+                                "scene_count": 1,
+                                "audio_duration_seconds": 5.0,
+                            },
+                        },
+                        "build_news_fingerprint": {
+                            "return_value": current_inputs,
+                        },
+                        "load_branding_duration": {
+                            "return_value": 2.0,
+                        },
+                        "validate_final_video": video_validation,
+                        "find_existing_success": {},
+                        "start_pipeline_record": {},
+                        "update_pipeline_meta": {},
+                        "complete_pipeline_record": {},
+                        "write_pipeline_state": {},
+                        "run_command": {},
+                        "has_valid_mistral_script": {},
+                        "has_valid_tts_output": {},
+                    }
+
+                    with ExitStack() as stack:
+                        stack.enter_context(
+                            patch.object(sys, "argv", argv)
+                        )
+                        stack.enter_context(
+                            patch.object(
+                                pipeline,
+                                "ARTIFACTS_ROOT",
+                                root,
+                            )
+                        )
+                        mocks = {
+                            name: stack.enter_context(
+                                patch.object(
+                                    pipeline,
+                                    name,
+                                    **options,
+                                )
+                            )
+                            for name, options in replacements.items()
+                        }
+                        captured = stack.enter_context(
+                            self.assertLogs(
+                                pipeline.log,
+                                level="INFO",
+                            )
+                        )
+                        result = pipeline.main()
+
+                    self.assertEqual(
+                        result,
+                        0 if scenario == "success" else 1,
+                    )
+                    self.assertEqual(snapshot(), original_files)
+
+                    for name in (
+                        "find_existing_success",
+                        "start_pipeline_record",
+                        "update_pipeline_meta",
+                        "complete_pipeline_record",
+                        "write_pipeline_state",
+                        "run_command",
+                        "has_valid_mistral_script",
+                        "has_valid_tts_output",
+                    ):
+                        mocks[name].assert_not_called()
+
+                    mocks[
+                        "release_lock"
+                    ].assert_called_once_with(conn)
+                    conn.close.assert_called_once()
+
+                    if scenario == "changed_inputs":
+                        mocks[
+                            "validate_final_video"
+                        ].assert_not_called()
+                        self.assertTrue(any(
+                            "Render inputs differ from saved fingerprint"
+                            in entry
+                            for entry in captured.output
+                        ))
+                    else:
+                        mocks[
+                            "validate_final_video"
+                        ].assert_called_once_with(
+                            final_path=final_path,
+                            expected_duration_seconds=7.0,
+                            expected_width=profile.width,
+                            expected_height=profile.height,
+                            expected_fps=profile.fps,
+                        )
+
+                    if scenario == "success":
+                        self.assertEqual(
+                            mocks[
+                                "build_news_fingerprint"
+                            ].call_count,
+                            2,
+                        )
+                        self.assertTrue(any(
+                            "Reusing verified final video" in entry
+                            for entry in captured.output
+                        ))
+                    elif scenario == "invalid_video":
+                        self.assertTrue(any(
+                            "Test quality gate rejected MP4" in entry
+                            for entry in captured.output
+                        ))
 if __name__ == "__main__":
     unittest.main()

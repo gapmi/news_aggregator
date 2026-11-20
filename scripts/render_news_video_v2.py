@@ -436,6 +436,34 @@ def write_scene_subtitles(
 
     return output_path
 
+VERTICAL_PHOTO_SECONDS = 10
+
+
+def plan_vertical_photos(
+    *,
+    asset_count: int,
+    total_frames: int,
+    fps: int,
+) -> list[tuple[int, int]]:
+    """Return (asset_index, frame_count) in playback order."""
+    if asset_count < 1:
+        raise ValueError("asset_count must be positive")
+    if total_frames < 1:
+        raise ValueError("total_frames must be positive")
+    if fps < 1:
+        raise ValueError("fps must be positive")
+
+    hold_frames = VERTICAL_PHOTO_SECONDS * fps
+    remaining = total_frames
+    plan: list[tuple[int, int]] = []
+
+    while remaining > 0:
+        asset_index = len(plan) % asset_count
+        frames = min(hold_frames, remaining)
+        plan.append((asset_index, frames))
+        remaining -= frames
+
+    return plan
 
 def render_scene(
     scene: dict[str, Any],
@@ -452,28 +480,25 @@ def render_scene(
     scene_dir.mkdir(parents=True, exist_ok=True)
 
     visual_type = str(scene.get("visual_type") or "photo")
+
     if profile.name == "news_vertical":
         total_frames = math.ceil(total_duration * profile.fps)
 
-        if total_frames < len(assets):
-            raise ValueError(
-                f"Scene {scene_number} has more assets than frames"
+        if visual_type == "photo":
+            segment_plan = plan_vertical_photos(
+                asset_count=len(assets),
+                total_frames=total_frames,
+                fps=profile.fps,
             )
-
-        base_frames, extra_frames = divmod(
-            total_frames,
-            len(assets),
-        )
-        segment_frame_counts = [
-            base_frames + (1 if index < extra_frames else 0)
-            for index in range(len(assets))
-        ]
+        else:
+            segment_plan = [(0, total_frames)]
     else:
         segment_duration = total_duration / len(assets)
-        segment_frame_counts = [
-            duration_frames(segment_duration)
-            for _ in assets
+        segment_plan = [
+            (index, duration_frames(segment_duration))
+            for index in range(len(assets))
         ]
+
     segment_paths: list[Path] = []
 
     print(
@@ -482,12 +507,16 @@ def render_scene(
         flush=True,
     )
 
-    for index, asset_path in enumerate(assets, start=1):
+    for index, (asset_index, frames) in enumerate(
+        segment_plan,
+        start=1,
+    ):
+        asset_path = assets[asset_index]
         segment_path = scene_dir / f"part_{index:02d}.mp4"
 
         render_asset_segment(
             asset_path=asset_path,
-            frames=segment_frame_counts[index - 1],
+            frames=frames,
             output_path=segment_path,
             profile=profile,
             visual_type=visual_type,

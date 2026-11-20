@@ -30,6 +30,11 @@ from scripts.video_profiles import (
     get_video_profile,
 )
 from fractions import Fraction
+from scripts.video_fingerprint import (
+    build_news_fingerprint,
+    changed_components,
+    check_saved_render,
+)
 
 log = logging.getLogger(__name__)
 
@@ -991,11 +996,174 @@ def main() -> int:
             and any(render_dir.iterdir())
             and not args.force_render
         ):
-            raise RuntimeError(
-                f"Render directory is not empty: {render_dir}. "
-                "Use --force-render only if replacing this profile's "
-                "render output is intended."
+            try:
+                saved_fingerprint_path = (
+                    render_dir / "render_fingerprint.json"
+                )
+
+                if not saved_fingerprint_path.is_file():
+                    raise RuntimeError(
+                        "Saved render fingerprint is missing"
+                    )
+
+                reuse_inputs = validate_existing_inputs(
+                    run_id=args.run_id,
+                    scene_manifest_path=scene_manifest_path,
+                    audio_manifest_path=audio_manifest_path,
+                    assets_manifest_path=collected_assets_manifest_path,
+                )
+
+                def current_reuse_fingerprint():
+                    return build_news_fingerprint(
+                        run_id=args.run_id,
+                        profile=profile,
+                        project_root=PROJECT_ROOT,
+                        scene_manifest_path=scene_manifest_path,
+                        audio_manifest_path=audio_manifest_path,
+                        assets_manifest_path=collected_assets_manifest_path,
+                        media_dir=MEDIA_DIR,
+                        max_assets_per_scene=args.max_assets_per_scene,
+                    )
+
+                reuse_fingerprint = current_reuse_fingerprint()
+
+                matched, reason = check_saved_render(
+                    record_path=saved_fingerprint_path,
+                    final_path=final_video_path,
+                    run_id=args.run_id,
+                    profile_name=profile.name,
+                    current_inputs=reuse_fingerprint,
+                )
+
+                if not matched:
+                    raise RuntimeError(reason)
+
+                reuse_branding_duration = load_branding_duration(
+                    render_dir=render_dir,
+                    run_id=args.run_id,
+                )
+
+                if reuse_branding_duration is None:
+                    raise RuntimeError(
+                        "Final video has no valid matching branding report"
+                    )
+
+                reuse_report = json.loads(
+                    (render_dir / "render_report_v2.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+                if not isinstance(reuse_report, dict):
+                    raise RuntimeError(
+                        "Render report root must be an object"
+                    )
+
+                if (
+                    reuse_report.get("run_id") != args.run_id
+                    or reuse_report.get("profile") != profile.name
+                ):
+                    raise RuntimeError(
+                        "Render report run or profile mismatch"
+                    )
+
+                if reuse_report.get("canvas") != {
+                    "width": profile.width,
+                    "height": profile.height,
+                    "fps": profile.fps,
+                }:
+                    raise RuntimeError(
+                        "Render report canvas mismatch"
+                    )
+
+                reuse_scene_files = reuse_report.get("scene_files")
+
+                if (
+                    not isinstance(reuse_scene_files, list)
+                    or len(reuse_scene_files)
+                    != reuse_inputs["scene_count"]
+                ):
+                    raise RuntimeError(
+                        "Render report scene count mismatch"
+                    )
+
+                reuse_news_duration = float(
+                    reuse_report["news_duration_seconds"]
+                )
+
+                if (
+                    not math.isfinite(reuse_news_duration)
+                    or abs(
+                        reuse_news_duration
+                        - reuse_inputs["audio_duration_seconds"]
+                    ) > 0.1
+                ):
+                    raise RuntimeError(
+                        "Render report news duration mismatch"
+                    )
+
+                reuse_video_report = validate_final_video(
+                    final_path=final_video_path,
+                    expected_duration_seconds=(
+                        reuse_inputs["audio_duration_seconds"]
+                        + reuse_branding_duration
+                    ),
+                    expected_width=profile.width,
+                    expected_height=profile.height,
+                    expected_fps=profile.fps,
+                )
+
+                completed_reuse_fingerprint = (
+                    current_reuse_fingerprint()
+                )
+
+                if completed_reuse_fingerprint != reuse_fingerprint:
+                    raise RuntimeError(
+                        "Render inputs changed during reuse checks"
+                    )
+
+                matched, reason = check_saved_render(
+                    record_path=saved_fingerprint_path,
+                    final_path=final_video_path,
+                    run_id=args.run_id,
+                    profile_name=profile.name,
+                    current_inputs=completed_reuse_fingerprint,
+                )
+
+                if not matched:
+                    raise RuntimeError(reason)
+
+                if (
+                    sha256_file(final_video_path)
+                    != reuse_video_report["sha256"]
+                ):
+                    raise RuntimeError(
+                        "Final video changed during reuse checks"
+                    )
+
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                KeyError,
+                RuntimeError,
+                subprocess.SubprocessError,
+            ) as exc:
+                raise RuntimeError(
+                    f"Render directory is not empty: {render_dir}. "
+                    f"Cannot reuse saved render: {exc}. "
+                    "Use --force-render only if replacing this "
+                    "profile's render output is intended."
+                ) from exc
+
+            log.info(
+                "Reusing verified final video: run_id=%s "
+                "profile=%s final_video=%s",
+                args.run_id,
+                profile.name,
+                final_video_path,
             )
+            return 0
 
         existing_success = find_existing_success(
             conn,
@@ -1288,6 +1456,20 @@ def main() -> int:
                     args.run_id,
                 )
 
+        input_fingerprint = None
+
+        if args.existing_inputs_only:
+            input_fingerprint = build_news_fingerprint(
+                run_id=args.run_id,
+                profile=profile,
+                project_root=PROJECT_ROOT,
+                scene_manifest_path=scene_manifest_path,
+                audio_manifest_path=audio_manifest_path,
+                assets_manifest_path=collected_assets_manifest_path,
+                media_dir=MEDIA_DIR,
+                max_assets_per_scene=args.max_assets_per_scene,
+            )
+
         update_pipeline_meta(
             conn,
             pipeline_run_id=pipeline_run_id,
@@ -1365,6 +1547,8 @@ def main() -> int:
             shutil.rmtree(render_dir)
             render_dir.mkdir(parents=True, exist_ok=True)
 
+        rendered_now = False
+
         if (
             args.existing_inputs_only
             or args.force_render
@@ -1384,6 +1568,7 @@ def main() -> int:
                 "--output-dir",
                 str(render_dir),
             ])
+            rendered_now = True
         else:
             log.info(
                 "Using existing final MP4: run_id=%s",
@@ -1477,6 +1662,66 @@ def main() -> int:
             expected_height=profile.height,
             expected_fps=profile.fps,
         )
+
+        if input_fingerprint is not None and rendered_now:
+            completed_fingerprint = build_news_fingerprint(
+                run_id=args.run_id,
+                profile=profile,
+                project_root=PROJECT_ROOT,
+                scene_manifest_path=scene_manifest_path,
+                audio_manifest_path=audio_manifest_path,
+                assets_manifest_path=collected_assets_manifest_path,
+                media_dir=MEDIA_DIR,
+                max_assets_per_scene=args.max_assets_per_scene,
+            )
+
+            if (
+                completed_fingerprint["sha256"]
+                != input_fingerprint["sha256"]
+            ):
+                changes = changed_components(
+                    input_fingerprint,
+                    completed_fingerprint,
+                )
+                raise RuntimeError(
+                    "Render inputs changed during production: "
+                    + ", ".join(changes)
+                )
+
+            fingerprint_record = {
+                "record_version": 1,
+                "run_id": args.run_id,
+                "profile": profile.name,
+                "inputs": input_fingerprint,
+                "output": {
+                    "filename": final_video_path.name,
+                    "sha256": final_video_report["sha256"],
+                    "size_bytes": final_video_report["size_bytes"],
+                    "duration_seconds": final_video_report[
+                        "duration_seconds"
+                    ],
+                },
+            }
+
+            fingerprint_path = render_dir / "render_fingerprint.json"
+            temporary_fingerprint_path = (
+                render_dir / ".render_fingerprint.tmp.json"
+            )
+
+            try:
+                temporary_fingerprint_path.write_text(
+                    json.dumps(
+                        fingerprint_record,
+                        ensure_ascii=False,
+                        indent=2,
+                        allow_nan=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                temporary_fingerprint_path.replace(fingerprint_path)
+            finally:
+                temporary_fingerprint_path.unlink(missing_ok=True)
 
         success_meta = {
             "stage": "rendered",

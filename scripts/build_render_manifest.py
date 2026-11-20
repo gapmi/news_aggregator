@@ -276,7 +276,7 @@ def select_assets(
     *,
     scene_number: int,
     rows: list[dict[str, str]],
-    max_assets: int,
+    max_assets: int | None,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     eligible: list[dict[str, str]] = []
     rejected: list[dict[str, Any]] = []
@@ -342,7 +342,7 @@ def select_assets(
         seen_paths.add(asset_path)
         selected.append(row)
 
-        if len(selected) >= max_assets:
+        if max_assets is not None and len(selected) >= max_assets:
             break
 
     return selected, rejected
@@ -783,7 +783,11 @@ def main() -> int:
         selected, rejected = select_assets(
             scene_number=scene_number,
             rows=assets_rows,
-            max_assets=args.max_assets_per_scene,
+            max_assets=(
+                None
+                if profile.name == "news_vertical"
+                else args.max_assets_per_scene
+            ),
         )
 
         rejected_rows.extend(rejected)
