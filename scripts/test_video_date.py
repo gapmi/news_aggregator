@@ -98,21 +98,30 @@ class VideoDateTests(unittest.TestCase):
 
     def test_date_subtitles_cover_full_duration(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "issue_date.srt"
+            path = Path(temporary) / "issue_date.ass"
 
             write_date_subtitles(
                 issue_date="2026-11-21",
                 duration_seconds=125.4601,
                 output_path=path,
+                profile=get_video_profile("news_vertical"),
             )
 
-            self.assertEqual(
-                path.read_text(encoding="utf-8"),
-                (
-                    "1\n"
-                    "00:00:00,000 --> 00:02:05,461\n"
-                    "November 21, 2026 \u00b7 GMT\n"
-                ),
+            content = path.read_text(encoding="utf-8")
+
+            self.assertIn(
+                "Dialogue: 0,0:00:00.00,0:02:05.47,",
+                content,
+            )
+            self.assertIn(
+                "November 21, 2026 \u00b7 GMT",
+                content,
+            )
+            self.assertIn("PlayResX: 1080", content)
+            self.assertIn("PlayResY: 1920", content)
+            self.assertIn(
+                r"{\an8\pos(540,48)\q2}",
+                content,
             )
 
     def test_date_subtitles_reject_invalid_duration(self):
@@ -127,6 +136,9 @@ class VideoDateTests(unittest.TestCase):
                             duration_seconds=duration,
                             output_path=(
                                 Path(temporary) / "issue_date.srt"
+                            ),
+                            profile=get_video_profile(
+                                "news_vertical"
                             ),
                         )
 
@@ -149,23 +161,75 @@ class VideoDateTests(unittest.TestCase):
                             duration_seconds=12.5,
                         )
 
+                    run.assert_called_once()
                     command = run.call_args.args[0]
+
                     self.assertEqual(
                         command[command.index("-fflags") + 1],
                         "+genpts",
                     )
+
                     video_filter = command[
                         command.index("-vf") + 1
                     ]
 
-                    expected_style = build_date_style(
-                        build_subtitle_style(profile)
+                    self.assertIn("subtitles=filename=", video_filter)
+                    self.assertIn("issue_date.ass", video_filter)
+                    self.assertNotIn("force_style", video_filter)
+
+                    ass_path = root / "issue_date.ass"
+                    self.assertTrue(
+                        ass_path.is_file(),
+                        f"ASS file was not created: {ass_path}",
                     )
 
-                    self.assertIn(expected_style, video_filter)
-                    self.assertTrue(
-                        (root / "issue_date.srt").is_file()
+                    content = ass_path.read_text(encoding="utf-8")
+
+                    self.assertIn(
+                        f"PlayResX: {profile.width}",
+                        content,
                     )
+                    self.assertIn(
+                        f"PlayResY: {profile.height}",
+                        content,
+                    )
+
+                    center_x = profile.width / 2
+                    top_y = round(profile.height * 0.025)
+                    expected_position = (
+                        f"{{\\an8\\pos({center_x:g},{top_y})\\q2}}"
+                    )
+
+                    self.assertIn(expected_position, content)
+                    self.assertIn("WrapStyle: 2", content)
+                    self.assertIn(
+                        "November 21, 2026 \u00b7 GMT",
+                        content,
+                    )
+
+                    subtitle_fields = dict(
+                        field.split("=", 1)
+                        for field in build_subtitle_style(
+                            profile
+                        ).split(",")
+                    )
+                    expected_font_size = round(
+                        profile.height * 0.018
+                    )
+
+                    self.assertIn(
+                        (
+                            f"Style: Date,"
+                            f"{subtitle_fields['FontName']},"
+                            f"{expected_font_size},"
+                        ),
+                        content,
+                    )
+
+                    self.assertFalse(
+                        (root / "issue_date.srt").exists()
+                    )
+
 
     def test_legacy_concat_has_no_date_filter(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -562,6 +562,7 @@ def write_date_subtitles(
     issue_date: str,
     duration_seconds: float,
     output_path: Path,
+    profile: VideoProfile,
 ) -> Path:
     text = format_issue_date(issue_date)
 
@@ -573,23 +574,65 @@ def write_date_subtitles(
     ):
         raise ValueError("Date duration must be finite and positive")
 
-    total_ms = math.ceil(duration_seconds * 1000)
-    seconds, milliseconds = divmod(total_ms, 1000)
+    subtitle_fields = dict(
+        field.split("=", 1)
+        for field in build_subtitle_style(profile).split(",")
+    )
+
+    font_name = subtitle_fields["FontName"]
+    font_size = round(profile.height * 0.018)
+    outline = max(1, round(font_size * 0.045, 2))
+
+    center_x = profile.width / 2
+    top_y = round(profile.height * 0.025)
+
+    total_cs = math.ceil(duration_seconds * 100)
+    seconds, centiseconds = divmod(total_cs, 100)
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
 
     end = (
-        f"{hours:02d}:{minutes:02d}:{seconds:02d},"
-        f"{milliseconds:03d}"
+        f"{hours}:{minutes:02d}:{seconds:02d}."
+        f"{centiseconds:02d}"
+    )
+
+    position = (
+        f"{{\\an8\\pos({center_x:g},{top_y})\\q2}}"
+    )
+
+    content = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {profile.width}\n"
+        f"PlayResY: {profile.height}\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, "
+        "SecondaryColour, OutlineColour, BackColour, Bold, "
+        "Italic, Underline, StrikeOut, ScaleX, ScaleY, "
+        "Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Date,{font_name},{font_size},"
+        f"{subtitle_fields['PrimaryColour']},"
+        "&H000000FF,"
+        f"{subtitle_fields['OutlineColour']},"
+        "&H00000000,0,0,0,0,100,100,0,0,1,"
+        f"{outline},{subtitle_fields['Shadow']},8,0,0,0,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, "
+        "MarginL, MarginR, MarginV, Effect, Text\n"
+        f"Dialogue: 0,0:00:00.00,{end},Date,,0,0,0,,"
+        f"{position}{text}\n"
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        f"1\n00:00:00,000 --> {end}\n{text}\n",
-        encoding="utf-8",
-    )
+    output_path.write_text(content, encoding="utf-8")
 
     return output_path
+
 
 def concat_final(
     *,
@@ -614,7 +657,8 @@ def concat_final(
         date_path = write_date_subtitles(
             issue_date=issue_date,
             duration_seconds=duration_seconds,
-            output_path=render_dir / "issue_date.srt",
+            output_path=render_dir / "issue_date.ass",
+            profile=profile,
         )
 
         escaped_path = (
@@ -624,16 +668,10 @@ def concat_final(
             .replace("'", "'\\''")
         )
 
-        date_style = build_date_style(
-            build_subtitle_style(profile)
-        )
 
         date_options = [
             "-vf",
-            (
-                f"subtitles=filename='{escaped_path}':"
-                f"force_style='{date_style}'"
-            ),
+            f"subtitles=filename='{escaped_path}'",
         ]
 
     command = [
