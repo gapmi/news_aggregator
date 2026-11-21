@@ -89,10 +89,39 @@ class VideoPipelineProfileTests(unittest.TestCase):
                     "scripts.build_render_manifest",
                 )
 
+                run_id_index = command.index("--run-id")
+                self.assertEqual(
+                    command[run_id_index + 1],
+                    "568",
+                )
+
+                with patch.object(
+                    sys, "argv", command[2:]
+                ):
+                    from scripts import build_render_manifest
+
+                    parsed = build_render_manifest.parse_args()
+
+                self.assertEqual(parsed.run_id, 568)
+                self.assertEqual(
+                    parsed.issue_date_gmt,
+                    "2026-11-21",
+                )
+                self.assertEqual(
+                    parsed.profile,
+                    "news_vertical",
+                )
+
                 profile_index = command.index("--profile")
                 self.assertEqual(
                     command[profile_index + 1],
                     "news_vertical",
+                )
+
+                date_index = command.index("--issue-date-gmt")
+                self.assertEqual(
+                    command[date_index + 1],
+                    "2026-11-21",
                 )
 
                 output_index = command.index("--output-dir")
@@ -121,7 +150,9 @@ class VideoPipelineProfileTests(unittest.TestCase):
                     "get_conn": {"return_value": conn},
                     "try_acquire_lock": {"return_value": True},
                     "release_lock": {},
-                    "validate_clustering_run": {},
+                    "validate_clustering_run": {
+                        "return_value": "2026-11-21",
+                    },
                     "find_existing_success": {"return_value": None},
                     "start_pipeline_record": {"return_value": 123},
                     "update_pipeline_meta": {},
@@ -158,6 +189,7 @@ class VideoPipelineProfileTests(unittest.TestCase):
             mocks["validate_existing_inputs"].assert_called_once()
             mocks["build_news_fingerprint"].assert_called_once_with(
                 run_id=568,
+                issue_date_gmt="2026-11-21",
                 profile=pipeline.get_video_profile("news_vertical"),
                 project_root=pipeline.PROJECT_ROOT,
                 scene_manifest_path=(
@@ -287,7 +319,11 @@ class VideoPipelineProfileTests(unittest.TestCase):
                     patch.object(pipeline, "release_lock")
                 )
                 stack.enter_context(
-                    patch.object(pipeline, "validate_clustering_run")
+                    patch.object(
+                        pipeline,
+                        "validate_clustering_run",
+                        return_value="2026-11-21",
+                    )
                 )
                 start_record = stack.enter_context(
                     patch.object(pipeline, "start_pipeline_record")
@@ -517,6 +553,10 @@ class VideoPipelineProfileTests(unittest.TestCase):
                                 json.dumps({
                                     "run_id": 568,
                                     "profile": profile.name,
+                                    "issue_date_gmt": "2026-11-21",
+                                    "issue_date_text": (
+                                        "November 21, 2026 \u00b7 GMT"
+                                    ),
                                     "canvas": {
                                         "width": profile.width,
                                         "height": profile.height,
@@ -546,7 +586,9 @@ class VideoPipelineProfileTests(unittest.TestCase):
                         "get_conn": {"return_value": conn},
                         "try_acquire_lock": {"return_value": True},
                         "release_lock": {},
-                        "validate_clustering_run": {},
+                        "validate_clustering_run": {
+                            "return_value": "2026-11-21",
+                        },
                         "find_existing_success": {
                             "return_value": None,
                         },
@@ -745,6 +787,10 @@ class VideoPipelineProfileTests(unittest.TestCase):
                         json.dumps({
                             "run_id": 568,
                             "profile": profile.name,
+                            "issue_date_gmt": "2026-11-21",
+                            "issue_date_text": (
+                                "November 21, 2026 \u00b7 GMT"
+                            ),
                             "canvas": {
                                 "width": profile.width,
                                 "height": profile.height,
@@ -803,7 +849,9 @@ class VideoPipelineProfileTests(unittest.TestCase):
                         "get_conn": {"return_value": conn},
                         "try_acquire_lock": {"return_value": True},
                         "release_lock": {},
-                        "validate_clustering_run": {},
+                        "validate_clustering_run": {
+                            "return_value": "2026-11-21",
+                        },
                         "validate_existing_inputs": {
                             "return_value": {
                                 "scene_count": 1,

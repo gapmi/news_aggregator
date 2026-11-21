@@ -1,5 +1,6 @@
 from __future__ import annotations
 from scripts.video_profiles import VideoProfile
+from scripts.video_date import validate_issue_date
 
 import hashlib
 import json
@@ -107,6 +108,7 @@ def build_news_fingerprint(
     assets_manifest_path: Path,
     media_dir: Path,
     max_assets_per_scene: int,
+    issue_date_gmt: str | None = None,
 ) -> dict[str, Any]:
     """
     Snapshot news inputs conservatively.
@@ -114,6 +116,8 @@ def build_news_fingerprint(
     Includes all source-image candidates for this run's scenes, not only
     selected photos, because changes can affect quality filtering/selection.
     """
+    if issue_date_gmt is not None:
+        issue_date_gmt = validate_issue_date(issue_date_gmt)
     audio = json.loads(
         audio_manifest_path.read_text(encoding="utf-8")
     )
@@ -198,6 +202,7 @@ def build_news_fingerprint(
         "map_regions.py",
         "scene_geography.py",
         "video_fingerprint.py",
+        "video_date.py",
     ):
         files[f"code.{filename}"] = (
             project_root / "scripts" / filename
@@ -230,6 +235,7 @@ def build_news_fingerprint(
         "branding_enabled": True,
         "pillow_version": version("Pillow"),
         "ffmpeg_version": ffmpeg.stdout.strip(),
+        "issue_date_gmt": issue_date_gmt,
     }
 
     return build_fingerprint(

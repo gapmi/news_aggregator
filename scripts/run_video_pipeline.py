@@ -12,12 +12,15 @@ import subprocess
 
 import sys
 import time
-from pathlib import Path
-from typing import Any
-
 import csv
 import psycopg2.extras
 
+from pathlib import Path
+from typing import Any
+from scripts.video_date import (
+    format_issue_date,
+    gmt_date_from_timestamp,
+)
 
 from scripts.video_branding import (
     MEDIA_DIR,
@@ -430,7 +433,7 @@ def release_lock(conn) -> None:
     conn.commit()
 
 
-def validate_clustering_run(conn, run_id: int) -> None:
+def validate_clustering_run(conn, run_id: int) -> str:
     with conn.cursor(
         cursor_factory=psycopg2.extras.RealDictCursor
     ) as cur:
@@ -460,6 +463,8 @@ def validate_clustering_run(conn, run_id: int) -> None:
         raise RuntimeError(
             f"Clustering run has no finished_at: run_id={run_id}"
         )
+
+    return gmt_date_from_timestamp(row["finished_at"])
 
 
 def find_existing_success(
@@ -908,6 +913,27 @@ def validate_existing_inputs(
         ),
     }
 
+def render_report_has_issue_date(
+    *,
+    render_dir: Path,
+    issue_date_gmt: str,
+) -> bool:
+    try:
+        report = json.loads(
+            (render_dir / "render_report_v2.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        return (
+            isinstance(report, dict)
+            and report.get("issue_date_gmt") == issue_date_gmt
+            and report.get("issue_date_text")
+            == format_issue_date(issue_date_gmt)
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -991,7 +1017,12 @@ def main() -> int:
             )
 
         lock_acquired = True
-        validate_clustering_run(conn, args.run_id)
+
+        issue_date_gmt = validate_clustering_run(
+            conn, args.run_id,
+        )
+        issue_date_text = format_issue_date(issue_date_gmt)
+
         if (
             args.existing_inputs_only
             and not args.skip_render
@@ -1019,6 +1050,7 @@ def main() -> int:
                 def current_reuse_fingerprint():
                     return build_news_fingerprint(
                         run_id=args.run_id,
+                        issue_date_gmt=issue_date_gmt,
                         profile=profile,
                         project_root=PROJECT_ROOT,
                         scene_manifest_path=scene_manifest_path,
@@ -1088,6 +1120,14 @@ def main() -> int:
                 ):
                     raise RuntimeError(
                         "Render report scene count mismatch"
+                    )
+
+                if not render_report_has_issue_date(
+                    render_dir=render_dir,
+                    issue_date_gmt=issue_date_gmt,
+                ):
+                    raise RuntimeError(
+                        "Saved render issue date is missing or mismatched"
                     )
 
                 reuse_news_duration = float(
@@ -1188,6 +1228,15 @@ def main() -> int:
                 run_id=args.run_id,
             ) is not None
         ):
+            if not render_report_has_issue_date(
+                render_dir=render_dir,
+                issue_date_gmt=issue_date_gmt,
+            ):
+                raise RuntimeError(
+                    "Existing final video has no matching GMT date. "
+                    "Output was preserved. Rebuild explicitly only "
+                    "after backing up this profile's render directory."
+                )
             log.info(
                 "Final video already exists for run_id=%s; "
                 "pipeline_run_id=%s",
@@ -1464,6 +1513,7 @@ def main() -> int:
         if args.existing_inputs_only:
             input_fingerprint = build_news_fingerprint(
                 run_id=args.run_id,
+                issue_date_gmt=issue_date_gmt,
                 profile=profile,
                 project_root=PROJECT_ROOT,
                 scene_manifest_path=scene_manifest_path,
@@ -1489,6 +1539,8 @@ def main() -> int:
             "scripts.build_render_manifest",
             "--run-id",
             str(args.run_id),
+            "--issue-date-gmt",
+            issue_date_gmt,
             "--profile",
             profile.name,
             "--audio-manifest",
@@ -1557,6 +1609,10 @@ def main() -> int:
             or args.force_render
             or not final_video_path.is_file()
             or final_video_path.stat().st_size == 0
+            or not render_report_has_issue_date(
+                render_dir=render_dir,
+                issue_date_gmt=issue_date_gmt,
+            )
             or load_branding_duration(
                 render_dir=render_dir,
                 run_id=args.run_id,
@@ -1601,7 +1657,13 @@ def main() -> int:
 
         if not isinstance(render_report, dict):
             raise RuntimeError("Render report root must be an object")
-
+        if not render_report_has_issue_date(
+            render_dir=render_dir,
+            issue_date_gmt=issue_date_gmt,
+        ):
+            raise RuntimeError(
+                "Final render report issue date is missing or mismatched"
+            )
         report_profile = render_report.get(
             "profile",
             DEFAULT_VIDEO_PROFILE,
@@ -1669,6 +1731,7 @@ def main() -> int:
         if input_fingerprint is not None and rendered_now:
             completed_fingerprint = build_news_fingerprint(
                 run_id=args.run_id,
+                issue_date_gmt=issue_date_gmt,
                 profile=profile,
                 project_root=PROJECT_ROOT,
                 scene_manifest_path=scene_manifest_path,
@@ -1749,6 +1812,8 @@ def main() -> int:
             "elapsed_seconds": round(
                 time.monotonic() - started_monotonic, 3
             ),
+            "issue_date_gmt": issue_date_gmt,
+            "issue_date_text": issue_date_text,
         }
 
         complete_pipeline_record(

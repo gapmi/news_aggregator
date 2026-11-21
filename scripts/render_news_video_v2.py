@@ -15,6 +15,12 @@ from scripts.video_profiles import (
     get_video_profile,
 )
 
+from scripts.video_date import (
+    build_date_style,
+    format_issue_date,
+    validate_issue_date,
+)
+
 WIDTH = 2400
 HEIGHT = 1350
 FPS = 30
@@ -551,15 +557,84 @@ def render_scene(
 
     return scene_path
 
+def write_date_subtitles(
+    *,
+    issue_date: str,
+    duration_seconds: float,
+    output_path: Path,
+) -> Path:
+    text = format_issue_date(issue_date)
+
+    if (
+        isinstance(duration_seconds, bool)
+        or not isinstance(duration_seconds, (int, float))
+        or not math.isfinite(duration_seconds)
+        or duration_seconds <= 0
+    ):
+        raise ValueError("Date duration must be finite and positive")
+
+    total_ms = math.ceil(duration_seconds * 1000)
+    seconds, milliseconds = divmod(total_ms, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    end = (
+        f"{hours:02d}:{minutes:02d}:{seconds:02d},"
+        f"{milliseconds:03d}"
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        f"1\n00:00:00,000 --> {end}\n{text}\n",
+        encoding="utf-8",
+    )
+
+    return output_path
 
 def concat_final(
     *,
     scene_paths: list[Path],
     output_path: Path,
     render_dir: Path,
+    profile: VideoProfile | None = None,
+    issue_date: str | None = None,
+    duration_seconds: float | None = None,
 ) -> None:
     concat_file = render_dir / "scenes_concat.txt"
     write_concat_file(scene_paths, concat_file)
+
+    date_options: list[str] = []
+
+    if issue_date is not None:
+        if profile is None or duration_seconds is None:
+            raise ValueError(
+                "Date overlay requires profile and duration_seconds"
+            )
+
+        date_path = write_date_subtitles(
+            issue_date=issue_date,
+            duration_seconds=duration_seconds,
+            output_path=render_dir / "issue_date.srt",
+        )
+
+        escaped_path = (
+            str(date_path.resolve())
+            .replace("\\", "\\\\")
+            .replace(":", "\\:")
+            .replace("'", "'\\''")
+        )
+
+        date_style = build_date_style(
+            build_subtitle_style(profile)
+        )
+
+        date_options = [
+            "-vf",
+            (
+                f"subtitles=filename='{escaped_path}':"
+                f"force_style='{date_style}'"
+            ),
+        ]
 
     command = [
         "ffmpeg",
@@ -570,6 +645,7 @@ def concat_final(
         "0",
         "-i",
         str(concat_file),
+        *date_options,
         "-fflags",
         "+genpts",
         "-avoid_negative_ts",
@@ -635,7 +711,10 @@ def main() -> int:
     )
 
     run_id = int(manifest["run_id"])
+    issue_date = manifest.get("issue_date_gmt")
 
+    if issue_date is not None:
+        issue_date = validate_issue_date(issue_date)
     render_dir = args.output_dir
     scenes_dir = render_dir / "scenes"
 
@@ -666,12 +745,6 @@ def main() -> int:
             profile=profile,
         )
 
-    concat_final(
-        scene_paths=sequence_paths,
-        output_path=final_path,
-        render_dir=render_dir,
-    )
-
     news_duration = sum(
         float(scene["actual_duration_seconds"])
         for scene in manifest["scenes"]
@@ -683,6 +756,15 @@ def main() -> int:
     expected_duration = round(
         news_duration + branding_duration,
         3,
+    )
+
+    concat_final(
+        scene_paths=sequence_paths,
+        output_path=final_path,
+        render_dir=render_dir,
+        profile=profile,
+        issue_date=issue_date,
+        duration_seconds=news_duration + branding_duration,
     )
 
     report = {
@@ -701,6 +783,12 @@ def main() -> int:
         "final_probe": probe(final_path),
         "scene_files": [str(path) for path in scene_paths],
         "sequence_files": [str(path) for path in sequence_paths],
+        "issue_date_gmt": issue_date,
+        "issue_date_text": (
+            format_issue_date(issue_date)
+            if issue_date is not None
+            else None
+        ),
     }
 
     report_path = render_dir / "render_report_v2.json"

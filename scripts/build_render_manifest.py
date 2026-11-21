@@ -12,6 +12,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from scripts.map_fallback import render_country_map, render_world_map
 from scripts.scene_geography import resolve_scene_country
+from scripts.video_date import validate_issue_date
 
 from scripts.video_profiles import (
     DEFAULT_VIDEO_PROFILE,
@@ -94,6 +95,12 @@ def parse_args() -> argparse.Namespace:
             / "maps"
             / "ne_110m_admin_0_countries.geojson"
         ),
+    )
+    parser.add_argument(
+        "--issue-date-gmt",
+        type=validate_issue_date,
+        default=None,
+        help="Stable issue date in GMT, formatted as YYYY-MM-DD.",
     )
     return parser.parse_args()
 
@@ -966,6 +973,8 @@ def main() -> int:
         "scene_count": len(render_scenes),
         "scenes": render_scenes,
     }
+    if args.issue_date_gmt is not None:
+        render_manifest["issue_date_gmt"] = args.issue_date_gmt
 
     render_manifest_path = args.output_dir / "render_manifest.json"
 
