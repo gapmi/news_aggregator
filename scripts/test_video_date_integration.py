@@ -12,7 +12,9 @@ from scripts import run_video_pipeline as pipeline
 from scripts import build_render_manifest as manifest_builder
 from scripts import video_fingerprint as fingerprint
 from scripts.video_profiles import get_video_profile
+from datetime import datetime, timezone
 
+from unittest.mock import MagicMock
 
 class VideoDateIntegrationTests(unittest.TestCase):
     def manifest_argv(self):
@@ -23,6 +25,32 @@ class VideoDateIntegrationTests(unittest.TestCase):
             "--assets-manifest", "manifest.csv",
             "--output-dir", "render_assets",
         ]
+
+    def test_clustering_run_query_explicitly_interprets_utc(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+
+        cursor.fetchone.return_value = {
+            "id": 580,
+            "status": "success",
+            "finished_at": datetime(
+                2026, 11, 21, 6, 0, 15,
+                tzinfo=timezone.utc,
+            ),
+        }
+
+        result = pipeline.validate_clustering_run(conn, 580)
+
+        self.assertEqual(result, "2026-11-21")
+
+        query, parameters = cursor.execute.call_args.args
+        normalized_query = " ".join(query.split())
+
+        self.assertIn(
+            "finished_at AT TIME ZONE 'UTC' AS finished_at",
+            normalized_query,
+        )
+        self.assertEqual(parameters, (580,))
 
     def test_fingerprint_rejects_invalid_date_before_reading_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:

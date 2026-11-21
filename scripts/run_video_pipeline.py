@@ -439,7 +439,10 @@ def validate_clustering_run(conn, run_id: int) -> str:
     ) as cur:
         cur.execute(
             """
-            SELECT id, status, finished_at
+            SELECT
+                id,
+                status,
+                finished_at AT TIME ZONE 'UTC' AS finished_at
             FROM clustering_runs
             WHERE id = %s
             LIMIT 1
