@@ -5,7 +5,7 @@ from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -20,16 +20,20 @@ import logging
 import numpy as np
 
 
-run_logs: list[str] = []
+RUN_LOGS_MAX_LINES = 1000
+run_logs: deque[str] = deque(maxlen=RUN_LOGS_MAX_LINES)
+run_logs_lock = threading.Lock()
 logger = logging.getLogger("news.collector")
 
 
 class LogCapture(logging.Handler):
     def emit(self, record):
-        run_logs.append(
+        message = (
             f"{datetime.now().strftime('%H:%M:%S')} "
             f"[{record.levelname}] {record.getMessage()}"
         )
+        with run_logs_lock:
+            run_logs.append(message)
 
 
 log_capture = LogCapture()
@@ -970,7 +974,9 @@ def get_stats(_: str = Depends(require_auth)):
 
 @app.get("/admin/logs")
 def get_logs(_: str = Depends(require_auth)):
-    return {"logs": run_logs[-100:]}
+    with run_logs_lock:
+        logs = list(run_logs)[-100:]
+    return {"logs": logs}
 
 
 @app.get("/topics")
@@ -1069,13 +1075,13 @@ def get_topic_detail(cluster_id: int):
 
 
 def run_collection():
-    global run_logs
-
     if collection_status.get("running"):
         logger.warning("collection skipped: already running")
         return
 
-    run_logs = []
+    with run_logs_lock:
+        run_logs.clear()
+
     collection_status["running"] = True
     run_started_at = time.perf_counter()
 
@@ -1161,8 +1167,13 @@ def run_collection():
     except Exception as e:
         import traceback
 
-        run_logs.append(f"ERROR: {e}")
-        run_logs.extend(traceback.format_exc().splitlines()[-30:])
+        error_lines = [
+            f"ERROR: {e}",
+            *traceback.format_exc().splitlines()[-30:],
+        ]
+        with run_logs_lock:
+            run_logs.extend(error_lines)
+
         logger.exception("collection failed")
 
     finally:
