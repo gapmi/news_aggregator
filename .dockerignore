@@ -59,3 +59,7 @@ tmp/
 temp/
 # Generated pipeline artifacts
 artifacts/
+# Local credentials and private keys
+secrets/
+*.pem
+*.key

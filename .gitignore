@@ -33,3 +33,7 @@ Thumbs.db
 *~
 # Generated pipeline artifacts
 artifacts/
+# Runtime credentials are mounted from the host
+secrets/
+*.pem
+*.key
