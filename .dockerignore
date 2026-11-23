@@ -57,3 +57,5 @@ Thumbs.db
 *~
 tmp/
 temp/
+# Generated pipeline artifacts
+artifacts/
