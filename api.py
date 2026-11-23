@@ -42,6 +42,7 @@ logging.getLogger().addHandler(log_capture)
 
 active_tokens: set[str] = set()
 collection_status = {"running": False, "last_run": None}
+collection_lock = threading.Lock()
 scheduler = BackgroundScheduler()
 security = HTTPBearer()
 
@@ -164,13 +165,37 @@ def load_sources_from_db():
     return rss_sources, html_sources
 
 
-def start_collection_job():
-    if collection_status["running"]:
-        return
+def _collection_thread_target() -> None:
+    try:
+        run_collection()
+    finally:
+        collection_status["running"] = False
+        collection_lock.release()
 
-    thread = threading.Thread(target=run_collection, daemon=True)
-    thread.start()
 
+def try_start_collection() -> bool:
+    if not collection_lock.acquire(blocking=False):
+        return False
+
+    collection_status["running"] = True
+
+    try:
+        thread = threading.Thread(
+            target=_collection_thread_target,
+            daemon=True,
+        )
+        thread.start()
+    except Exception:
+        collection_status["running"] = False
+        collection_lock.release()
+        raise
+
+    return True
+
+
+def start_collection_job() -> None:
+    if not try_start_collection():
+        logger.warning("scheduled collection skipped: already running")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1075,14 +1100,9 @@ def get_topic_detail(cluster_id: int):
 
 
 def run_collection():
-    if collection_status.get("running"):
-        logger.warning("collection skipped: already running")
-        return
-
     with run_logs_lock:
         run_logs.clear()
 
-    collection_status["running"] = True
     run_started_at = time.perf_counter()
 
     logger.warning("collection started")
@@ -1177,19 +1197,18 @@ def run_collection():
         logger.exception("collection failed")
 
     finally:
-        collection_status["running"] = False
         collection_status["last_run"] = datetime.now().isoformat()
         total_elapsed = time.perf_counter() - run_started_at
         logger.warning("collection finished, duration=%.2fs", total_elapsed)
 
-
 @app.post("/admin/collect")
 def start_collection(_: str = Depends(require_auth)):
-    if collection_status["running"]:
-        raise HTTPException(status_code=409, detail="Collection already running")
+    if not try_start_collection():
+        raise HTTPException(
+            status_code=409,
+            detail="Collection already running",
+        )
 
-    thread = threading.Thread(target=run_collection, daemon=True)
-    thread.start()
     return {"ok": True, "message": "Collection started"}
 
 
