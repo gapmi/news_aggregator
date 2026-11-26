@@ -46,6 +46,7 @@ CENTRAL_AMERICA: dict[str, Any] = {
     },
 }
 
+
 KOREAN_PENINSULA: dict[str, Any] = {
     "id": "korean_peninsula",
     "bounds": (112.0, 27.0, 145.0, 47.0),
