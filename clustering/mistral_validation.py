@@ -27,6 +27,8 @@ REQUIRED_VISUAL_PROMPT_SUFFIX = (
     "16:9, no text, no logos, no watermark"
 )
 
+STYLE_SUFFIX_MARKER = "cinematic editorial news documentary"
+
 ALLOWED_VISUAL_TYPES = {
     "editorial_b_roll",
     "abstract_data_visual",
@@ -419,6 +421,17 @@ def _normalize_derived_fields(script: MistralVideoScript) -> None:
     )
 
 
+def _normalize_visual_prompt_suffix(script: MistralVideoScript) -> None:
+    """Replace the model's style tail with the exact required suffix."""
+    for scene in script.scenes:
+        prompt = _normalize_whitespace(scene.visual_prompt)
+        marker_at = prompt.casefold().find(STYLE_SUFFIX_MARKER)
+        base = prompt[:marker_at] if marker_at >= 0 else prompt
+        base = base.rstrip(" ,.;:")
+        if not base:
+            continue
+        scene.visual_prompt = f"{base}, {REQUIRED_VISUAL_PROMPT_SUFFIX}"
+
 def parse_mistral_video_script(
     raw_content: str,
 ) -> MistralVideoScript:
@@ -687,6 +700,7 @@ def parse_and_validate_mistral_video_script(
     input_payload: dict[str, Any],
 ) -> MistralVideoScript:
     script = parse_mistral_video_script(raw_content)
+    _normalize_visual_prompt_suffix(script)
     _normalize_derived_fields(script)
     validate_mistral_video_script(script, input_payload)
     return script
