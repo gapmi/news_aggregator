@@ -1,13 +1,17 @@
 from __future__ import annotations
-
 from collections import Counter
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from clustering.content_filters import GAMBLING_PROMO_COMBINED
+
 import json
 import re
 import unicodedata
 import logging
-from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+import math
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +24,8 @@ MAX_VIDEO_DURATION_SECONDS = 600
 MIN_SCENE_WORDS = 20
 MAX_SCENE_WORDS = 110
 MAX_WORDS_PER_SECOND = 2.8
-
+MIN_TOPIC_COVERAGE_RATIO = float(os.getenv("VIDEO_MIN_TOPIC_COVERAGE", "0.75"))
+MAX_SCENES_PER_TOPIC = 2
 REQUIRED_VISUAL_PROMPT_SUFFIX = (
     "cinematic editorial news documentary, restrained colors, "
     "natural lighting, realistic camera movement, clean composition, "
@@ -471,10 +476,17 @@ def validate_mistral_video_script(
     allowed_references = set(topics)
     scenes = script.scenes
 
-    if len(scenes) != len(topics):
+    topic_total = len(topics)
+    required_total = min(
+        topic_total,
+        max(2, math.ceil(topic_total * MIN_TOPIC_COVERAGE_RATIO)),
+    )
+    priority_references = list(topics)[:required_total]
+
+    if len(scenes) > topic_total:
         errors.append(
-            "Scene count must exactly equal the number of editorial topics: "
-            f"expected={len(topics)}, actual={len(scenes)}"
+            "Scene count must not exceed the number of editorial topics: "
+            f"max={topic_total}, actual={len(scenes)}"
         )
 
     numbers = [scene.scene_number for scene in scenes]
@@ -552,6 +564,8 @@ def validate_mistral_video_script(
         for label, patterns in (
             ("Forbidden internal narration terms", FORBIDDEN_NARRATION_TERMS),
             ("First-person or direct-address terms", FORBIDDEN_FIRST_PERSON_PATTERNS),
+            ("Gambling or promotional content",
+             {"gambling promotion": GAMBLING_PROMO_COMBINED}),
         ):
             matches = _find_pattern_matches(text, patterns)
             if matches:
@@ -665,13 +679,30 @@ def validate_mistral_video_script(
                 "required safe editorial style suffix"
             )
 
-    for reference in sorted(allowed_references):
+    for reference in topics:
         count = reference_counts[reference]
-        if count != 1:
+        if count > MAX_SCENES_PER_TOPIC:
             errors.append(
-                "Every editorial topic must be referenced exactly once: "
-                f"topic_reference={reference!r}, actual={count}"
+                "Editorial topic is referenced too many times: "
+                f"topic_reference={reference!r}, "
+                f"max={MAX_SCENES_PER_TOPIC}, actual={count}"
             )
+        elif count > 1:
+            logger.warning(
+                "Editorial topic is covered by %s scenes: %r",
+                count, reference,
+            )
+        elif count == 0:
+            if reference in priority_references:
+                errors.append(
+                    "Priority editorial topic is not referenced: "
+                    f"topic_reference={reference!r}"
+                )
+            else:
+                logger.warning(
+                    "Low-priority editorial topic was skipped: %r",
+                    reference,
+                )
 
     summary_lists = {
         "continuing_topics": script.coverage_summary.continuing_topics,

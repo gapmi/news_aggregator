@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
-import re
 from typing import Any
+from clustering.content_filters import (
+    GAMBLING_PROMO_PATTERNS,
+    GAMBLING_TOPIC_PATTERNS,
+    MATERIAL_GAMBLING_NEWS_PATTERNS,
+)
 
+import re
+import os
 import numpy as np
 import psycopg2.extras
 
@@ -23,6 +29,9 @@ DEFAULT_MAX_CONTINUING_TOPICS = 5
 MIN_EDITORIAL_EVIDENCE_ARTICLES = 2
 MIN_CENTRAL_EVIDENCE_SIMILARITY = 0.72
 MAX_CANDIDATE_EVIDENCE_ARTICLES = 40
+MAX_TOPICS_CEILING = int(os.getenv("VIDEO_MAX_TOPICS_CEILING", "12"))
+
+MIN_EDITORIAL_CLUSTER_SIZE = int(os.getenv("VIDEO_MIN_CLUSTER_SIZE", "8"))
 
 EDITORIAL_EXCLUDED_TOPIC_PATTERNS = (
     r"\bclima\s+hoy\b",
@@ -146,7 +155,8 @@ def _editorial_exclusion_reason(
 
     if _matches_any(topic_text, EDITORIAL_EXCLUDED_TOPIC_PATTERNS):
         return "routine_weather_forecast"
-
+    if _matches_any(topic_text, GAMBLING_PROMO_PATTERNS):
+        return "gambling_promotion"
     articles = [
         article
         for article in item.get("evidence_articles") or []
@@ -181,7 +191,11 @@ def _editorial_exclusion_reason(
         and not _matches_any(evidence_text, MATERIAL_CURRENCY_PATTERNS)
     ):
         return "routine_currency_quote"
-
+    if (
+        all(_matches_any(h, GAMBLING_TOPIC_PATTERNS) for h in headlines)
+        and not _matches_any(evidence_text, MATERIAL_GAMBLING_NEWS_PATTERNS)
+    ):
+        return "gambling_content"
     if (
         all(
             _matches_any(headline, ROUTINE_ALERT_PATTERNS)
@@ -192,6 +206,8 @@ def _editorial_exclusion_reason(
         return "routine_local_alert_update"
 
     return None
+
+
 
 
 def _is_excluded_editorial_topic(item: dict[str, Any]) -> bool:
@@ -420,7 +436,11 @@ def _load_central_evidence_articles(
             rss_description=row["rss_description"],
             source_name=source_name,
         )
-
+        if _matches_any(
+            f"{title} {summary.get('summary_text') or ''}",
+            GAMBLING_PROMO_PATTERNS,
+        ):
+            continue
         candidates.append(
             {
                 "article_id": int(row["id"]),
@@ -784,7 +804,7 @@ def _select_editorial_topics(
     transitions: list[dict[str, Any]],
     max_topics: int,
 ) -> list[dict[str, Any]]:
-    max_topics = min(max_topics, DEFAULT_MAX_TOPICS)
+    max_topics = min(max_topics, MAX_TOPICS_CEILING)
 
     def evidence_count(item: dict[str, Any]) -> int:
         return len(item.get("evidence_articles") or [])
@@ -808,7 +828,7 @@ def _select_editorial_topics(
             return False
         if not _normalize_whitespace(item.get("public_topic_title")):
             return False
-        return int(item.get("_current_size", 0)) >= 8
+        return int(item.get("_current_size", 0)) >= MIN_EDITORIAL_CLUSTER_SIZE
 
     def rank(item: dict[str, Any]) -> tuple[int, int, int, float, str]:
         current_size = int(item.get("_current_size", 0))
@@ -1069,6 +1089,10 @@ def build_mistral_video_payload(
         max_topics=max_topics,
     )
 
+    video_requirements["target_duration_seconds"] = max(
+        60, min(target_duration_seconds, len(editorial_topics) * 40)
+    )
+    
     agenda_summary = _build_agenda_summary(
         current_run=child_run,
         editorial_topics=editorial_topics,

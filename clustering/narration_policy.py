@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 
-NARRATION_POLICY_VERSION = "1.1"
+NARRATION_POLICY_VERSION = "1.2"
 
 
 _RULES: tuple[tuple[str, str], ...] = (
@@ -173,6 +173,16 @@ _RULES: tuple[tuple[str, str], ...] = (
         "before dropping material supported details. Do not reduce "
         "a sufficiently evidenced story to a bare headline unless "
         "a hard output constraint requires it.",
+    ),
+    (
+        "N25",
+        "Never narrate gambling, betting or casino promotions: bonus "
+        "offers, free or bonus bets, promo codes, sign-up deals, odds "
+        "boosts, operator names used in an offer, or affiliate content. "
+        "Treat such articles as unusable evidence and build the story "
+        "only from the remaining supplied articles. Do not mention "
+        "wagering terms or deposit amounts unless the story itself is "
+        "news about gambling regulation, enforcement or business results.",
     ),
 )
 
